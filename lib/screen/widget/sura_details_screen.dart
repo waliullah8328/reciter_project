@@ -12,6 +12,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../model/user_reciter_model.dart';
 
+
+
 class SurahDetailScreen extends ConsumerStatefulWidget {
   final Surah surah;
   const SurahDetailScreen({super.key, required this.surah});
@@ -39,6 +41,10 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
   bool isPlaying = false;
   double playbackSpeed = 0.5; // start at 0.5x
 
+  /// ================= BOTTOM PLAYER =================
+  bool showBottomPlayer = false;
+  String? bottomReciterName;
+
   @override
   void initState() {
     super.initState();
@@ -47,6 +53,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
 
     if (widget.surah.audioUrls != null && widget.surah.audioUrls!.isNotEmpty) {
       currentReciterUrl = widget.surah.audioUrls!.first;
+      bottomReciterName = "Select Reciter";
     }
 
     player.playerStateStream.listen((state) {
@@ -56,7 +63,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
     });
   }
 
-  /// ================= FILE =================
+  /// ================= FILE HANDLING =================
   Future<File> _getLocalFile(String url) async {
     final dir = await getApplicationDocumentsDirectory();
     final bytes = utf8.encode(url);
@@ -77,9 +84,9 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
     final file = await _getLocalFile(url);
 
     try {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Downloading...')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Downloading...')),
+      );
 
       await Dio().download(url, file.path);
 
@@ -90,23 +97,25 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
       setState(() {});
 
       playAudioWithHighlight(file.path);
+      setState(() {
+        showBottomPlayer = true;
+      });
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Download failed')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Download failed')),
+      );
     }
   }
 
-  /// ================= DAILY =================
+  /// ================= DAILY GOAL =================
   Future<void> _loadDailyProgress() async {
     final prefs = await SharedPreferences.getInstance();
-
     final todayStr = "${_today.year}-${_today.month}-${_today.day}";
     final savedDate = prefs.getString('date') ?? '';
 
     if (savedDate != todayStr) {
       await prefs.setString('date', todayStr);
-      await prefs.setInt(todayStr, 0); // initialize today
+      await prefs.setInt(todayStr, 0);
     }
 
     setState(() {
@@ -154,23 +163,37 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
     );
   }
 
-  /// ================= PLAY =================
+  /// ================= PLAY AUDIO =================
   void playAudioWithHighlight(String url, {int startSecond = 0}) async {
     try {
       await player.stop();
-      highlightedAyah = -1;
-      _lastScrolledIndex = null;
-      _lastTrackedSecond = startSecond;
+
+      setState(() {
+        highlightedAyah = -1;
+        _lastScrolledIndex = null;
+        _lastTrackedSecond = startSecond;
+        showBottomPlayer = true;
+      });
 
       await player.setUrl(url);
       await player.setSpeed(playbackSpeed);
       await player.seek(Duration(seconds: startSecond));
       await player.play();
 
+      // small delay to highlight first ayah immediately
+      Future.delayed(const Duration(milliseconds: 200), () {
+        if (highlightedAyah == -1 && widget.surah.ayahs!.isNotEmpty) {
+          setState(() {
+            highlightedAyah = 0;
+          });
+          _scrollToCurrentAyah(0);
+        }
+      });
+
       player.positionStream.listen((position) async {
         final seconds = position.inSeconds;
 
-        /// ✅ TRACK LISTEN TIME
+        // Track listen time
         if (seconds != _lastTrackedSecond) {
           _lastTrackedSecond = seconds;
           _listenedSecondsToday += 1;
@@ -183,18 +206,15 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
         for (int i = 0; i < (widget.surah.ayahs?.length ?? 0); i++) {
           final ayah = widget.surah.ayahs![i];
 
-          int reciterIndex = widget.surah.audioUrls!.indexOf(
-            currentReciterUrl!,
-          );
+          int reciterIndex = widget.surah.audioUrls!.indexOf(currentReciterUrl!);
 
-          final timing =
-              (ayah.timings != null &&
-                  ayah.timings!.length > reciterIndex &&
-                  ayah.timings![reciterIndex].isNotEmpty)
+          final timing = (ayah.timings != null &&
+              ayah.timings!.length > reciterIndex &&
+              ayah.timings![reciterIndex].isNotEmpty)
               ? ayah.timings![reciterIndex]
-              : [0, 0];
+              : [0, 3];
 
-          final start = timing.isNotEmpty ? timing[0] : 0;
+          final start = timing[0];
           final end = timing.length > 1 ? timing[1] : start + 3;
 
           if (time >= start && time <= end) {
@@ -214,7 +234,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
   }
 
   void _scrollToCurrentAyah(int index) {
-    if (_lastScrolledIndex == index) return;
+    if (_lastScrolledIndex == index && highlightedAyah != -1) return;
     _lastScrolledIndex = index;
 
     final key = _itemKeys[index];
@@ -233,6 +253,13 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
   /// ================= AYAH TAP =================
   void _onAyahTap(int index) async {
     final ayah = widget.surah.ayahs![index];
+    final reciterNames = [
+      "Abdulbasit Abdulsamad",
+      "Abdullah Al-Johany",
+      "Ibrahim Al-Akdar",
+      "Ali Hajjaj Alsouasi",
+    ];
+
     showModalBottomSheet(
       context: context,
       builder: (_) {
@@ -255,16 +282,16 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                           if (isPlaying) {
                             await player.pause();
                           } else {
-                            final localFile = await _getLocalFile(
-                              currentReciterUrl!,
-                            );
+                            final localFile = await _getLocalFile(currentReciterUrl!);
                             if (await localFile.exists()) {
                               playAudioWithHighlight(localFile.path);
+                              setState(() {
+                                bottomReciterName =
+                                reciterNames[widget.surah.audioUrls!.indexOf(currentReciterUrl!)];
+                              });
                             } else {
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Audio not downloaded'),
-                                ),
+                                const SnackBar(content: Text('Audio not downloaded')),
                               );
                             }
                           }
@@ -280,10 +307,10 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                         items: [0.5, 1.0, 1.5, 2.0]
                             .map(
                               (e) => DropdownMenuItem(
-                                value: e,
-                                child: Text("${e}x"),
-                              ),
-                            )
+                            value: e,
+                            child: Text("${e}x"),
+                          ),
+                        )
                             .toList(),
                         onChanged: (val) {
                           if (val != null) {
@@ -345,8 +372,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
               );
             },
           ),
-          if (widget.surah.audioUrls != null &&
-              widget.surah.audioUrls!.isNotEmpty)
+          if (widget.surah.audioUrls != null && widget.surah.audioUrls!.isNotEmpty)
             FutureBuilder<Map<String, bool>>(
               future: _checkDownloadedStatus(),
               builder: (context, snapshot) {
@@ -390,11 +416,13 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                       final localFile = await _getLocalFile(val);
                       if (await localFile.exists()) {
                         playAudioWithHighlight(localFile.path);
+                        setState(() {
+                          bottomReciterName =
+                          reciterNames[widget.surah.audioUrls!.indexOf(currentReciterUrl!)];
+                        });
                       } else {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Audio not downloaded.'),
-                          ),
+                          const SnackBar(content: Text('Audio not downloaded.')),
                         );
                       }
                       setState(() {});
@@ -405,75 +433,132 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
             ),
         ],
       ),
-
-      body: Column(
+      body: Stack(
         children: [
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  "Today's Progress: ${(_listenedSecondsToday / 60).toStringAsFixed(1)} / $_dailyGoalMinutes min",
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+          Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "Today's Progress: ${(_listenedSecondsToday / 60).toStringAsFixed(1)} / $_dailyGoalMinutes min",
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 6),
+                    LinearProgressIndicator(value: progress),
+                  ],
                 ),
-                const SizedBox(height: 6),
-                LinearProgressIndicator(value: progress),
-              ],
-            ),
-          ),
-          Expanded(
-            child: ListView.builder(
-              controller: _scrollController,
-              itemCount: widget.surah.ayahs?.length ?? 0,
-              itemBuilder: (context, index) {
-                final ayah = widget.surah.ayahs![index];
-                final isHighlighted = index == highlightedAyah;
+              ),
+              Expanded(
+                child: ListView.builder(
+                  controller: _scrollController,
+                  itemCount: widget.surah.ayahs?.length ?? 0,
+                  itemBuilder: (context, index) {
+                    final ayah = widget.surah.ayahs![index];
+                    final isHighlighted = index == highlightedAyah;
 
-                _itemKeys[index] = _itemKeys[index] ?? GlobalKey();
+                    _itemKeys[index] = _itemKeys[index] ?? GlobalKey();
 
-                return GestureDetector(
-                  onTap: () => _onAyahTap(index),
-                  child: Container(
-                    key: _itemKeys[index],
-                    margin: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 4,
-                    ),
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: isHighlighted ? Colors.yellow[100] : Colors.white,
-                      border: Border.all(
-                        color: isHighlighted
-                            ? Colors.orange
-                            : Colors.grey.shade300,
+                    return GestureDetector(
+                      onTap: () => _onAyahTap(index),
+                      child: Container(
+                        key: _itemKeys[index],
+                        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: isHighlighted ? Colors.yellow[100] : Colors.white,
+                          border: Border.all(
+                            color: isHighlighted ? Colors.orange : Colors.grey.shade300,
+                          ),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: ListTile(
+                          title: Text(ayah.arabic ?? ''),
+                          subtitle: Text(ayah.english ?? ''),
+                          trailing: _bookmarkedAyahs.contains(index)
+                              ? const Icon(Icons.bookmark, color: Colors.orange)
+                              : null,
+                        ),
                       ),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: ListTile(
-                      title: Text(ayah.arabic ?? ''),
-                      subtitle: Text(ayah.english ?? ''),
-                      trailing: _bookmarkedAyahs.contains(index)
-                          ? const Icon(Icons.bookmark, color: Colors.orange)
-                          : null,
-                    ),
-                  ),
-                );
-              },
-            ),
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
+
+          // Bottom Audio Player
+          if (showBottomPlayer)
+            Positioned(
+              bottom: 20,
+              left: 20,
+              right: 20,
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: const [
+                    BoxShadow(color: Colors.black26, blurRadius: 6),
+                  ],
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    IconButton(
+                      onPressed: () async {
+                        if (isPlaying) {
+                          await player.pause();
+                        } else {
+                          await player.play();
+                        }
+                      },
+                      icon: Icon(
+                        isPlaying ? Icons.pause_circle : Icons.play_circle,
+                        size: 36,
+                      ),
+                    ),
+                    Column(
+                      children: [
+                        Text(bottomReciterName ?? ''),
+                        DropdownButton<double>(
+                          value: playbackSpeed,
+                          items: [0.5, 1.0, 1.5, 2.0]
+                              .map(
+                                (e) => DropdownMenuItem(
+                              value: e,
+                              child: Text("${e}x"),
+                            ),
+                          )
+                              .toList(),
+                          onChanged: (val) {
+                            if (val != null) {
+                              setState(() {
+                                playbackSpeed = val;
+                              });
+                              player.setSpeed(playbackSpeed);
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
-
       bottomNavigationBar: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [5, 10, 15].map((min) {
           return ElevatedButton(
             onPressed: () async {
               await _setGoal(min);
-              ScaffoldMessenger.of(
-                context,
-              ).showSnackBar(SnackBar(content: Text("Goal set: $min minutes")));
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text("Goal set: $min minutes")),
+              );
             },
             child: Text("$min min"),
           );
