@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:reciter_project/screen/widget/sura_details_screen.dart';
-import 'package:reciter_project/screen/widget/sura_list_screen%5D.dart';
+
+import 'package:reciter_project/screen/widget/sura_list_screen.dart';
 
 void main() {
   runApp(ProviderScope(child: const MyApp()));
