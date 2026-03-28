@@ -353,7 +353,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      "Today's Progress: ${dailyProgress.listenedSeconds ~/ 60} / ${dailyProgress.goalMinutes} min",
+                      "Today's Progress: ${ (dailyProgress.listenedSeconds / 60).floor() } / ${dailyProgress.goalMinutes} min",
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 6),
@@ -400,12 +400,13 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                   },
                 ),
               ),
+
             ],
           ),
           // Bottom Player
           if (bottomPlayer.visible)
             Positioned(
-              bottom: 20,
+              bottom: 50,
               left: 20,
               right: 20,
               child: Container(
@@ -452,7 +453,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                             ),
                             // Current speed display
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 6),
                               decoration: BoxDecoration(
                                 color: Colors.orange,
                                 borderRadius: BorderRadius.circular(8),
@@ -491,60 +492,140 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
     return Consumer(builder: (context, ref, _) {
       final isPlaying = ref.watch(audioPlayerProvider).playing;
       final bookmarks = ref.watch(bookmarksProvider);
-      final playbackSpeed = ref.watch(playbackSpeedProvider);
       final currentReciter = ref.watch(currentReciterProvider);
 
       return Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(16),
         child: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(ayah.arabic, style: const TextStyle(fontSize: 18)),
+            // Ayah Text
+            Text(
+              ayah.arabic,
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 6),
             Text(ayah.english),
-            const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                IconButton(
-                  onPressed: () async {
-                    final player = ref.read(audioPlayerProvider);
-                    if (isPlaying) {
-                      await player.pause();
-                    } else {
-                      final url = currentReciter;
-                      if (url != null) {
-                        final file = await _getLocalFile(url);
-                        if (await file.exists()) {
-                          _playAudio(file.path, url);
-                          ref.read(bottomPlayerProvider.notifier).setReciter(
-                              reciterNames[widget.surah.audioUrls.indexOf(url)]);
-                        } else {
+
+            const SizedBox(height: 20),
+
+            /// -------- DOWNLOAD / PLAY BUTTON --------
+            FutureBuilder<File>(
+              future: currentReciter != null ? _getLocalFile(currentReciter) : null,
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) return const SizedBox();
+
+                final file = snapshot.data!;
+                final isDownloaded = file.existsSync();
+
+                return SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      backgroundColor:
+                      isDownloaded ? Colors.green : Colors.blue,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    onPressed: () async {
+                      if (currentReciter == null) return;
+
+                      // ---------------- DOWNLOAD ----------------
+                      if (!isDownloaded) {
+                        try {
                           ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Audio not downloaded')));
+                            const SnackBar(content: Text('Downloading...')),
+                          );
+
+                          await Dio().download(currentReciter, file.path);
+
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Download complete')),
+                          );
+
+                          setState(() {});
+                        } catch (e) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Download failed')),
+                          );
                         }
                       }
-                    }
-                  },
-                  icon: Icon(isPlaying ? Icons.pause_circle : Icons.play_circle, size: 36),
-                ),
-                DropdownButton<double>(
-                  value: playbackSpeed,
-                  items: [0.5, 1.0, 1.5, 2.0]
-                      .map((e) => DropdownMenuItem(value: e, child: Text("${e}x"))).toList(),
-                  onChanged: (val) {
-                    if (val != null) {
-                      ref.read(playbackSpeedProvider.notifier).state = val;
-                      ref.read(audioPlayerProvider).setSpeed(val);
-                    }
-                  },
-                ),
-                IconButton(
-                  onPressed: () => ref.read(bookmarksProvider.notifier).toggle(index),
-                  icon: Icon(bookmarks.contains(index) ? Icons.bookmark : Icons.bookmark_border),
-                ),
-              ],
+                      // ---------------- PLAY / PAUSE ----------------
+                      else {
+                        final player = ref.read(audioPlayerProvider);
+
+                        if (isPlaying) {
+                          await player.pause();
+                        } else {
+                          _playAudio(file.path, currentReciter);
+
+                          ref.read(bottomPlayerProvider.notifier).setReciter(
+                              reciterNames[
+                              widget.surah.audioUrls.indexOf(currentReciter)]);
+                        }
+                      }
+                    },
+                    icon: Icon(
+                      isDownloaded
+                          ? (isPlaying ? Icons.pause : Icons.play_arrow)
+                          : Icons.download,
+                    ),
+                    label: Text(
+                      isDownloaded
+                          ? (isPlaying ? "Pause Audio" : "Play Audio")
+                          : "Download Audio",
+                    ),
+                  ),
+                );
+              },
             ),
+
+            const SizedBox(height: 12),
+
+            /// -------- BOOKMARK BUTTON (FULL WIDTH) --------
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  side: BorderSide(
+                    color: bookmarks.contains(index)
+                        ? Colors.orange
+                        : Colors.grey,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                onPressed: () {
+                  ref.read(bookmarksProvider.notifier).toggle(index);
+                },
+                icon: Icon(
+                  bookmarks.contains(index)
+                      ? Icons.bookmark
+                      : Icons.bookmark_border,
+                  color: bookmarks.contains(index)
+                      ? Colors.orange
+                      : Colors.grey,
+                ),
+                label: Text(
+                  bookmarks.contains(index)
+                      ? "Remove Bookmark"
+                      : "Add Bookmark",
+                  style: TextStyle(
+                    color: bookmarks.contains(index)
+                        ? Colors.orange
+                        : Colors.grey,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 10),
           ],
         ),
       );
