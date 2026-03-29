@@ -186,7 +186,15 @@ class BottomPlayerNotifier extends StateNotifier<BottomPlayerState> {
 
 class SurahDetailScreen extends ConsumerStatefulWidget {
   final Surah surah;
-  const SurahDetailScreen({super.key, required this.surah});
+  final List<Surah> allSurahs; // Add list of all surahs for auto-play next
+  final int surahIndex;  // Current surah index in the list
+  
+  const SurahDetailScreen({
+    super.key,
+    required this.surah,
+    required this.allSurahs,
+    required this.surahIndex,
+  });
 
   @override
   ConsumerState<SurahDetailScreen> createState() => _SurahDetailScreenState();
@@ -202,6 +210,9 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
   
   // Track last incremented second to avoid multiple increments per second
   int _lastIncrementedSecond = -1;
+  
+  // Local playing state for immediate UI feedback
+  bool _localIsPlaying = false;
 
   final List<String> reciterNames = [
     "Abdulbasit Abdulsamad",
@@ -209,6 +220,46 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
     "Ibrahim Al-Akdar",
     "Ali Hajjaj Alsouasi",
   ];
+
+  /// ================= AUTO-PLAY NEXT SURAH =================
+  Future<void> _autoPlayNextSurah() async {
+    try {
+      // Check if there's a next surah
+      if (widget.surahIndex < widget.allSurahs.length - 1) {
+        final nextSurah = widget.allSurahs[widget.surahIndex + 1];
+        final reciterUrl = ref.read(currentReciterProvider);
+        
+        if (reciterUrl != null) {
+          final file = await _getLocalFile(reciterUrl);
+          
+          if (await file.exists()) {
+            print('Auto-playing next surah: ${nextSurah.name}');
+            
+            // Navigate to next surah
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => SurahDetailScreen(
+                  surah: nextSurah,
+                  allSurahs: widget.allSurahs,
+                  surahIndex: widget.surahIndex + 1,
+                ),
+              ),
+            );
+            
+            // Delay to ensure navigation is complete
+            await Future.delayed(const Duration(milliseconds: 500));
+          } else {
+            print('Next surah audio not downloaded');
+          }
+        }
+      } else {
+        print('No more surahs to play');
+      }
+    } catch (e) {
+      print('Error auto-playing next surah: $e');
+    }
+  }
 
   /// ================= FILE HANDLING =================
   Future<File> _getLocalFile(String url) async {
@@ -329,6 +380,15 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
       // Play audio
       await player.play();
       print('Audio playback started successfully');
+
+      // Listen to player state changes (completion detection)
+      player.playerStateStream.listen((playerState) {
+        // Check if audio has completed
+        if (playerState.processingState == ProcessingState.completed) {
+          print('Current surah audio finished, auto-playing next...');
+          _autoPlayNextSurah();
+        }
+      });
 
       // ================= Listen to audio position =================
       _positionStreamSubscription = player.positionStream.listen((position) async {

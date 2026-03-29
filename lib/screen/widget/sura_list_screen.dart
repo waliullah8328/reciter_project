@@ -129,6 +129,8 @@ class SurahListScreen extends ConsumerWidget {
                       MaterialPageRoute(
                         builder: (_) => SurahDetailScreen(
                           surah: surah,
+                          allSurahs: surahs,
+                          surahIndex: index,
                         ),
                       ),
                     );

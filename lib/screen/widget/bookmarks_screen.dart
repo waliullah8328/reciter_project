@@ -48,11 +48,16 @@ class BookmarksScreen extends ConsumerWidget {
                 color: Colors.orange.shade100,
                 child: GestureDetector(
                   onTap: () {
+                    final surahIndex = model.surahs.indexWhere((s) => s.id == suraId);
                     Navigator.pop(context);
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => SurahDetailScreen(surah: surah),
+                        builder: (_) => SurahDetailScreen(
+                          surah: surah,
+                          allSurahs: model.surahs,
+                          surahIndex: surahIndex,
+                        ),
                       ),
                     );
                   },
@@ -74,6 +79,7 @@ class BookmarksScreen extends ConsumerWidget {
                               style: TextStyle(
                                 fontSize: 12,
                                 color: Colors.grey.shade700,
+
                               ),
                             ),
                           ],
@@ -151,11 +157,16 @@ class BookmarksScreen extends ConsumerWidget {
                           // Go to surah button
                           ElevatedButton.icon(
                             onPressed: () {
+                              final surahIndex = model.surahs.indexWhere((s) => s.id == surah.id);
                               Navigator.pop(context);
                               Navigator.push(
                                 context,
                                 MaterialPageRoute(
-                                  builder: (_) => SurahDetailScreen(surah: surah),
+                                  builder: (_) => SurahDetailScreen(
+                                    surah: surah,
+                                    allSurahs: model.surahs,
+                                    surahIndex: surahIndex,
+                                  ),
                                 ),
                               );
                             },
