@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:reciter_project/screen/widget/sura_details_screen.dart';
+import 'package:reciter_project/screen/widget/bookmarks_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../view_model/reciter_view_model.dart';
 
@@ -78,6 +79,25 @@ class SurahListScreen extends ConsumerWidget {
         title: Text(
           goal != null ? 'Surahs ($goal min goal)' : 'Surahs',
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.bookmark),
+            onPressed: () {
+              quranAsync.when(
+                data: (data) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => BookmarksScreen(model: data),
+                    ),
+                  );
+                },
+                loading: () {},
+                error: (_, __) {},
+              );
+            },
+          ),
+        ],
       ),
       body: quranAsync.when(
         data: (data) {

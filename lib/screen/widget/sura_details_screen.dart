@@ -12,6 +12,35 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../model/user_reciter_model.dart';
 
+/// ================= BOOKMARK MODEL =================
+class Bookmark {
+  final int suraId;
+  final int ayahId;
+  final String arabicText;
+  final String englishText;
+
+  Bookmark({
+    required this.suraId,
+    required this.ayahId,
+    required this.arabicText,
+    required this.englishText,
+  });
+
+  factory Bookmark.fromJson(Map<String, dynamic> json) => Bookmark(
+    suraId: json['sura_id'],
+    ayahId: json['ayah_id'],
+    arabicText: json['arabic_text'] ?? '',
+    englishText: json['english_text'] ?? '',
+  );
+
+  Map<String, dynamic> toJson() => {
+    'sura_id': suraId,
+    'ayah_id': ayahId,
+    'arabic_text': arabicText,
+    'english_text': englishText,
+  };
+}
+
 /// ================= RIVERPOD PROVIDERS =================
 
 // Audio player
@@ -26,9 +55,9 @@ final dailyProgressProvider =
 StateNotifierProvider<DailyProgressNotifier, DailyProgressState>(
         (ref) => DailyProgressNotifier());
 
-// Bookmarks
+// Bookmarks with sura and ayah info
 final bookmarksProvider =
-StateNotifierProvider<BookmarksNotifier, Set<int>>((ref) => BookmarksNotifier());
+StateNotifierProvider<BookmarksNotifier, List<Bookmark>>((ref) => BookmarksNotifier());
 
 // Highlighted ayah
 final highlightedAyahProvider = StateProvider<int>((ref) => -1);
@@ -43,6 +72,12 @@ StateNotifierProvider<BottomPlayerNotifier, BottomPlayerState>(
 
 // Current reciter URL
 final currentReciterProvider = StateProvider<String?>((ref) => null);
+
+// Playing state stream provider for real-time play/pause button updates
+final playingStreamProvider = StreamProvider<bool>((ref) {
+  final player = ref.watch(audioPlayerProvider);
+  return player.playingStream;
+});
 
 /// ================= STATE MODELS =================
 
@@ -89,27 +124,46 @@ class DailyProgressNotifier extends StateNotifier<DailyProgressState> {
   }
 }
 
-class BookmarksNotifier extends StateNotifier<Set<int>> {
-  BookmarksNotifier() : super({}) {
+class BookmarksNotifier extends StateNotifier<List<Bookmark>> {
+  BookmarksNotifier() : super([]) {
     _load();
   }
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
-    final keys = prefs.getStringList('bookmarks') ?? [];
-    state = keys.map((e) => int.parse(e)).toSet();
+    final bookmarksJson = prefs.getStringList('bookmarks') ?? [];
+    state = bookmarksJson
+        .map((e) => Bookmark.fromJson(json.decode(e)))
+        .toList();
   }
 
-  Future<void> toggle(int index) async {
+  Future<void> toggle(int suraId, int ayahId, String arabicText, String englishText) async {
     final prefs = await SharedPreferences.getInstance();
-    final newSet = Set<int>.from(state);
-    if (newSet.contains(index)) {
-      newSet.remove(index);
+    final bookmark = Bookmark(
+      suraId: suraId,
+      ayahId: ayahId,
+      arabicText: arabicText,
+      englishText: englishText,
+    );
+
+    final newList = List<Bookmark>.from(state);
+    final index = newList.indexWhere((b) => b.suraId == suraId && b.ayahId == ayahId);
+
+    if (index != -1) {
+      newList.removeAt(index);
     } else {
-      newSet.add(index);
+      newList.add(bookmark);
     }
-    state = newSet;
-    await prefs.setStringList('bookmarks', state.map((e) => e.toString()).toList());
+
+    state = newList;
+    await prefs.setStringList(
+      'bookmarks',
+      newList.map((b) => json.encode(b.toJson())).toList(),
+    );
+  }
+
+  bool isBookmarked(int suraId, int ayahId) {
+    return state.any((b) => b.suraId == suraId && b.ayahId == ayahId);
   }
 }
 
@@ -142,6 +196,12 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
   final ScrollController _scrollController = ScrollController();
   final Map<int, GlobalKey> _itemKeys = {};
   int? _lastScrolledIndex;
+  
+  // Store position listener subscription to cancel when needed
+  dynamic _positionStreamSubscription;
+  
+  // Track last incremented second to avoid multiple increments per second
+  int _lastIncrementedSecond = -1;
 
   final List<String> reciterNames = [
     "Abdulbasit Abdulsamad",
@@ -179,67 +239,183 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
     }
   }
 
-  void _playAudio(String path, [String? reciterUrl]) async {
+  void onAyahTap(int index) async {
     final player = ref.read(audioPlayerProvider);
-    await player.stop();
+    final reciterUrl = ref.read(currentReciterProvider);
 
-    final reciterIndex = reciterUrl != null ? widget.surah.audioUrls.indexOf(reciterUrl) : 0;
-    final playbackSpeed = ref.read(playbackSpeedProvider);
+    if (reciterUrl == null) return;
 
-    ref.read(highlightedAyahProvider.notifier).state = -1;
-    ref.read(bottomPlayerProvider.notifier).show(reciterNames[reciterIndex]);
-    ref.read(currentReciterProvider.notifier).state = widget.surah.audioUrls[reciterIndex];
+    final reciterIndex = widget.surah.audioUrls.indexOf(reciterUrl);
+    if (reciterIndex == -1) return;
 
-    await player.setFilePath(path);
-    await player.setSpeed(playbackSpeed);
-    await player.play();
+    final ayah = widget.surah.ayahs[index];
 
-    // ================= Listen to audio position =================
-    player.positionStream.listen((position) async {
-      final time = position.inMilliseconds / 1000.0;
+    if (ayah.timings.length <= reciterIndex ||
+        ayah.timings[reciterIndex].isEmpty) return;
 
-      final reciterUrl = ref.read(currentReciterProvider);
-      if (reciterUrl == null) return;
+    final startTime = ayah.timings[reciterIndex][0];
 
-      final reciterIndex = widget.surah.audioUrls.indexOf(reciterUrl);
-      if (reciterIndex == -1) return;
+    // 🔥 Fix starts here
+    final wasPlaying = player.playing;
 
-      for (int i = 0; i < widget.surah.ayahs.length; i++) {
-        final ayah = widget.surah.ayahs[i];
-        if (ayah.timings.length <= reciterIndex || ayah.timings[reciterIndex].length < 2) continue;
+    await player.seek(
+      Duration(milliseconds: (startTime * 1000).toInt()),
+    );
 
-        final start = ayah.timings[reciterIndex][0];
-        final end = ayah.timings[reciterIndex][1];
+    if (wasPlaying) {
+      await player.play();
+    }
 
-        if (time >= start && time <= end) {
-          if (ref.read(highlightedAyahProvider) != i) {
-            ref.read(highlightedAyahProvider.notifier).state = i;
-            _scrollToCurrentAyah(i);
-          }
-          break;
+    // Update UI
+    ref.read(highlightedAyahProvider.notifier).state = index;
+    _scrollToCurrentAyah(index);
+  }
+
+  void _playAudio(String path, [String? reciterUrl, int? startingAyahIndex]) async {
+    try {
+      // Cancel previous listener
+      await _positionStreamSubscription?.cancel();
+      
+      // Reset last incremented second
+      _lastIncrementedSecond = -1;
+      
+      final player = ref.read(audioPlayerProvider);
+      
+      // Stop any existing playback first
+      try {
+        if (player.playing) {
+          await player.stop();
         }
+      } catch (e) {
+        print('Error stopping player: $e');
       }
 
-      await ref.read(dailyProgressProvider.notifier).incrementListening();
-    });
+      final reciterIndex = reciterUrl != null ? widget.surah.audioUrls.indexOf(reciterUrl) : 0;
+      final playbackSpeed = ref.read(playbackSpeedProvider);
+
+      // Determine starting ayah (use provided index or start from 0)
+      final initialAyahIndex = startingAyahIndex ?? 0;
+      
+      // Highlight starting ayah immediately
+      ref.read(highlightedAyahProvider.notifier).state = initialAyahIndex;
+      _scrollToCurrentAyah(initialAyahIndex);
+      
+      ref.read(bottomPlayerProvider.notifier).show(reciterNames[reciterIndex]);
+      ref.read(currentReciterProvider.notifier).state = widget.surah.audioUrls[reciterIndex];
+
+      // Verify file exists
+      final file = File(path);
+      if (!await file.exists()) {
+        print('Audio file does not exist: $path');
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Audio file not found')),
+        );
+        return;
+      }
+
+      // Set audio source
+      await player.setFilePath(path);
+      await player.setSpeed(playbackSpeed);
+      
+      // If starting from a specific ayah, seek to that ayah's start time
+      if (startingAyahIndex != null && startingAyahIndex > 0 && startingAyahIndex < widget.surah.ayahs.length) {
+        final startingAyah = widget.surah.ayahs[startingAyahIndex];
+        if (startingAyah.timings.length > reciterIndex && startingAyah.timings[reciterIndex].length >= 1) {
+          final startTime = startingAyah.timings[reciterIndex][0];
+          await player.seek(Duration(milliseconds: (startTime * 1000).toInt()));
+        }
+      }
+      
+      // Play audio
+      await player.play();
+      print('Audio playback started successfully');
+
+      // ================= Listen to audio position =================
+      _positionStreamSubscription = player.positionStream.listen((position) async {
+        final time = position.inMilliseconds / 1000.0;
+        final currentSecond = time.floor();
+
+        final reciterUrl = ref.read(currentReciterProvider);
+        if (reciterUrl == null) return;
+
+        final reciterIndex = widget.surah.audioUrls.indexOf(reciterUrl);
+        if (reciterIndex == -1) return;
+
+        // Find matching ayah based on current time - check from beginning to find the correct one
+        int matchedIndex = -1;
+        for (int i = 0; i < widget.surah.ayahs.length; i++) {
+          final ayah = widget.surah.ayahs[i];
+          
+          // Skip if timing data is invalid
+          if (ayah.timings.length <= reciterIndex || ayah.timings[reciterIndex].isEmpty) continue;
+          if (ayah.timings[reciterIndex].length < 2) continue;
+
+          final start = ayah.timings[reciterIndex][0];
+          final end = ayah.timings[reciterIndex][1];
+
+          // Check if current position is within this ayah's time range
+          if (time >= start && time <= end) {
+            matchedIndex = i;
+            break;
+          }
+        }
+
+        // Automatically update highlighting when ayah changes
+        final currentHighlight = ref.read(highlightedAyahProvider);
+        if (matchedIndex != -1 && currentHighlight != matchedIndex) {
+          // Update highlighting immediately
+          ref.read(highlightedAyahProvider.notifier).state = matchedIndex;
+          
+          // Scroll to the new ayah with animation
+          _scrollToCurrentAyah(matchedIndex);
+        }
+
+        // Only increment listening time once per second when audio is actively playing
+        if (player.playing && currentSecond != _lastIncrementedSecond) {
+          _lastIncrementedSecond = currentSecond;
+          await ref.read(dailyProgressProvider.notifier).incrementListening();
+        }
+      });
+    } catch (e) {
+      print('Error in _playAudio: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Playback error: $e')),
+      );
+    }
   }
 
   void _scrollToCurrentAyah(int index) {
     if (_lastScrolledIndex == index) return;
     _lastScrolledIndex = index;
 
-    final key = _itemKeys[index];
-    if (key == null) return;
+    // Use post frame callback to ensure widget is rendered and visible
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      try {
+        final key = _itemKeys[index];
+        if (key == null) return;
 
-    final context = key.currentContext;
-    if (context != null) {
-      Scrollable.ensureVisible(
-        context,
-        alignment: 0.4,
-        duration: const Duration(milliseconds: 400),
-        curve: Curves.easeInOut,
-      );
-    }
+        final context = key.currentContext;
+        if (context != null && context.mounted) {
+          // Scroll smoothly to the ayah
+          Scrollable.ensureVisible(
+            context,
+            alignment: 0.35,  // Position ayah at 35% from top for better visibility
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+          );
+        }
+      } catch (e) {
+        // Silently handle any scroll errors
+        print('Scroll error: $e');
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _positionStreamSubscription?.cancel();
+    _scrollController.dispose();
+    super.dispose();
   }
 
   @override
@@ -247,11 +423,23 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
     super.initState();
     if (widget.surah.audioUrls.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
-        final firstUrl = widget.surah.audioUrls.first;
-        ref.read(currentReciterProvider.notifier).state = firstUrl;
-        final file = await _getLocalFile(firstUrl);
-        if (await file.exists()) {
-          _playAudio(file.path, firstUrl);
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          final savedReciterUrl = prefs.getString('saved_reciter');
+          
+          // Use saved reciter if available, otherwise use first
+          final firstUrl = savedReciterUrl ?? widget.surah.audioUrls.first;
+          
+          if (!widget.surah.audioUrls.contains(firstUrl)) {
+            // Fallback to first if saved is invalid
+            ref.read(currentReciterProvider.notifier).state = widget.surah.audioUrls.first;
+          } else {
+            ref.read(currentReciterProvider.notifier).state = firstUrl;
+          }
+          
+          // Don't auto-play - wait for user to click play button
+        } catch (e) {
+          print('Error in initState: $e');
         }
       });
     }
@@ -365,6 +553,8 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                 child: ListView.builder(
                   controller: _scrollController,
                   itemCount: widget.surah.ayahs.length,
+                  // Add key for efficient rebuilding
+                  key: Key('ayah_list_${widget.surah.id}'),
                   itemBuilder: (context, index) {
                     final ayah = widget.surah.ayahs[index];
                     _itemKeys[index] = _itemKeys[index] ?? GlobalKey();
@@ -384,14 +574,21 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                         decoration: BoxDecoration(
                           color: isHighlighted ? Colors.yellow[100] : Colors.white,
                           border: Border.all(
-                              color: isHighlighted ? Colors.orange : Colors.grey.shade300
+                              color: isHighlighted ? Colors.orange : Colors.grey.shade300,
+                              width: isHighlighted ? 2 : 1,
                           ),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: ListTile(
-                          title: Text(ayah.arabic),
+                          title: Text(
+                            ayah.arabic,
+                            style: TextStyle(
+                              fontWeight: isHighlighted ? FontWeight.bold : FontWeight.normal,
+                              fontSize: isHighlighted ? 17 : 16,
+                            ),
+                          ),
                           subtitle: Text(ayah.english),
-                          trailing: bookmarks.contains(index)
+                          trailing: ref.read(bookmarksProvider).any((b) => b.suraId == widget.surah.id && b.ayahId == ayah.ayah)
                               ? const Icon(Icons.bookmark, color: Colors.orange)
                               : null,
                         ),
@@ -420,10 +617,15 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
                     Consumer(builder: (context, ref, _) {
-                      final player = ref.watch(audioPlayerProvider);
-                      final isPlaying = player.playing;
+                      final playingAsync = ref.watch(playingStreamProvider);
+                      final isPlaying = playingAsync.when(
+                        data: (playing) => playing,
+                        loading: () => false,
+                        error: (_, __) => false,
+                      );
                       return IconButton(
                         onPressed: () async {
+                          final player = ref.read(audioPlayerProvider);
                           if (isPlaying) {
                             await player.pause();
                           } else {
@@ -433,51 +635,63 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                         icon: Icon(isPlaying ? Icons.pause_circle : Icons.play_circle, size: 36),
                       );
                     }),
-                    Row(
-                      children: [
-                        Text(bottomPlayer.reciterName ?? '',style: TextStyle(fontSize: 12),),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // Decrease Button
-                            IconButton(
-                              onPressed: () {
-                                double current = ref.read(playbackSpeedProvider);
-                                if (current > 0.5) {
-                                  current -= 0.5;
-                                  ref.read(playbackSpeedProvider.notifier).state = current;
-                                  ref.read(audioPlayerProvider).setSpeed(current);
-                                }
-                              },
-                              icon: const Icon(Icons.arrow_left),
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              bottomPlayer.reciterName ?? '',
+                              style: const TextStyle(fontSize: 12),
+                              overflow: TextOverflow.ellipsis,
                             ),
-                            // Current speed display
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: Colors.orange,
-                                borderRadius: BorderRadius.circular(8),
+                          ),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // Decrease Button
+                              IconButton(
+                                onPressed: () {
+                                  double current = ref.read(playbackSpeedProvider);
+                                  if (current > 0.5) {
+                                    current -= 0.5;
+                                    ref.read(playbackSpeedProvider.notifier).state = current;
+                                    ref.read(audioPlayerProvider).setSpeed(current);
+                                  }
+                                },
+                                icon: const Icon(Icons.arrow_left),
+                                iconSize: 20,
+                                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                               ),
-                              child: Text(
-                                "${ref.watch(playbackSpeedProvider).toStringAsFixed(1)} x",
-                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                              // Current speed display
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: Colors.orange,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(
+                                  "${ref.watch(playbackSpeedProvider).toStringAsFixed(1)} x",
+                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                                ),
                               ),
-                            ),
-                            // Increase Button
-                            IconButton(
-                              onPressed: () {
-                                double current = ref.read(playbackSpeedProvider);
-                                if (current < 2.0) {
-                                  current += 0.5;
-                                  ref.read(playbackSpeedProvider.notifier).state = current;
-                                  ref.read(audioPlayerProvider).setSpeed(current);
-                                }
-                              },
-                              icon: const Icon(Icons.arrow_right),
-                            ),
-                          ],
-                        )
-                      ],
+                              // Increase Button
+                              IconButton(
+                                onPressed: () {
+                                  double current = ref.read(playbackSpeedProvider);
+                                  if (current < 2.0) {
+                                    current += 0.5;
+                                    ref.read(playbackSpeedProvider.notifier).state = current;
+                                    ref.read(audioPlayerProvider).setSpeed(current);
+                                  }
+                                },
+                                icon: const Icon(Icons.arrow_right),
+                                iconSize: 20,
+                                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                              ),
+                            ],
+                          )
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -490,7 +704,12 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
 
   Widget _ayahBottomSheet(int index, Ayah ayah) {
     return Consumer(builder: (context, ref, _) {
-      final isPlaying = ref.watch(audioPlayerProvider).playing;
+      final playingAsync = ref.watch(playingStreamProvider);
+      final isPlaying = playingAsync.when(
+        data: (playing) => playing,
+        loading: () => false,
+        error: (_, __) => false,
+      );
       final bookmarks = ref.watch(bookmarksProvider);
       final currentReciter = ref.watch(currentReciterProvider);
 
@@ -560,11 +779,21 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                         if (isPlaying) {
                           await player.pause();
                         } else {
-                          _playAudio(file.path, currentReciter);
+                          // Save selected reciter preference
+                          final prefs = await SharedPreferences.getInstance();
+                          await prefs.setString('saved_reciter', currentReciter!);
+
+                          // Play from this specific ayah (pass the index)
+                         // await player.pause();
+                          _playAudio(file.path, currentReciter, index);
+                          //onAyahTap( index);
 
                           ref.read(bottomPlayerProvider.notifier).setReciter(
                               reciterNames[
                               widget.surah.audioUrls.indexOf(currentReciter)]);
+
+                          // Close modal to see the highlighting
+                          Navigator.pop(context);
                         }
                       }
                     },
@@ -592,7 +821,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                 style: OutlinedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   side: BorderSide(
-                    color: bookmarks.contains(index)
+                    color: bookmarks.any((b) => b.suraId == widget.surah.id && b.ayahId == ayah.ayah)
                         ? Colors.orange
                         : Colors.grey,
                   ),
@@ -601,22 +830,27 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                   ),
                 ),
                 onPressed: () {
-                  ref.read(bookmarksProvider.notifier).toggle(index);
+                  ref.read(bookmarksProvider.notifier).toggle(
+                    widget.surah.id,
+                    ayah.ayah,
+                    ayah.arabic,
+                    ayah.english,
+                  );
                 },
                 icon: Icon(
-                  bookmarks.contains(index)
+                  bookmarks.any((b) => b.suraId == widget.surah.id && b.ayahId == ayah.ayah)
                       ? Icons.bookmark
                       : Icons.bookmark_border,
-                  color: bookmarks.contains(index)
+                  color: bookmarks.any((b) => b.suraId == widget.surah.id && b.ayahId == ayah.ayah)
                       ? Colors.orange
                       : Colors.grey,
                 ),
                 label: Text(
-                  bookmarks.contains(index)
+                  bookmarks.any((b) => b.suraId == widget.surah.id && b.ayahId == ayah.ayah)
                       ? "Remove Bookmark"
                       : "Add Bookmark",
                   style: TextStyle(
-                    color: bookmarks.contains(index)
+                    color: bookmarks.any((b) => b.suraId == widget.surah.id && b.ayahId == ayah.ayah)
                         ? Colors.orange
                         : Colors.grey,
                     fontWeight: FontWeight.bold,
