@@ -8,10 +8,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:reciter_project/screen/widget/settings_bottom_sheet.dart';
 import 'package:reciter_project/screen/widget/weekly_report_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../common/custom_text.dart';
+import '../../model/settings_view_model.dart';
 import '../../model/user_reciter_model.dart';
 
 /// ================= BOOKMARK MODEL =================
@@ -553,6 +555,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
     final bookmarks = ref.watch(bookmarksProvider);
     final bottomPlayer = ref.watch(bottomPlayerProvider);
     final playbackSpeed = ref.watch(playbackSpeedProvider);
+    final selectedTheme = ref.watch(settingsProvider.select((s)=>s.selectedTheme));
 
     final goalSeconds = dailyProgress.goalMinutes * 60;
     final progress = (dailyProgress.listenedSeconds / goalSeconds).clamp(
@@ -561,6 +564,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
     );
 
     return Scaffold(
+      backgroundColor: selectedTheme ==0? Colors.white:Color(0xff101828),
       // appBar: AppBar(
       //   title: Text(widget.surah.name),
       //   actions: [
@@ -636,10 +640,10 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
       //   ],
       // ),
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           image: DecorationImage(
-            image: AssetImage("assets/image/white_quran_back_ground.png"),
-            fit: BoxFit.cover,
+            image: AssetImage(selectedTheme == 0?"assets/image/white_quran_back_ground.png":"assets/image/black_theme.png"),
+            fit: BoxFit.fitHeight,
           ),
         ),
         child: Stack(
@@ -653,16 +657,17 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                     children: [
                       GestureDetector(
                         onTap: () => Navigator.pop(context),
-                        child: const Icon(Icons.arrow_back),
+                        child:  Icon(Icons.arrow_back,color: selectedTheme ==0?Colors.black:Colors.white,),
                       ),
                       const SizedBox(width: 10),
 
                       Expanded(
                         child: Text(
                           widget.surah.name,
-                          style: const TextStyle(
+                          style:  TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,
+                            color: selectedTheme ==0?Colors.black:Colors.white,
                           ),
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -679,108 +684,113 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                       // ),
 
                       IconButton(
-                        icon: const Icon(Icons.settings),
+                        icon:  Icon(Icons.settings,color: selectedTheme ==0?Colors.black:Colors.white,),
                         onPressed: () async {
-                          final prefs = await SharedPreferences.getInstance();
-                          final savedReciterUrl = prefs.getString(
-                            'saved_reciter',
-                          );
-                          final downloadedMap =
-                              await _checkDownloadedStatus();
+                          showSettingsBottomSheet( context);
 
-                          await showDialog(
-                            context: context,
-                            builder: (context) {
-                              return StatefulBuilder(
-                                builder: (context, setState) {
-                                  return AlertDialog(
-                                    title: const Text("Select Reciter"),
-                                    content: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: List.generate(
-                                        widget.surah.audioUrls.length,
-                                        (i) {
-                                          final url =
-                                              widget.surah.audioUrls[i];
-                                          final isSaved =
-                                              url == savedReciterUrl;
-                                          final isDownloaded =
-                                              downloadedMap[url] ?? false;
 
-                                          return ListTile(
-                                            title: Text(reciterNames[i]),
-                                            trailing: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                if (isDownloaded)
-                                                  const Icon(
-                                                    Icons.check_circle,
-                                                    color: Colors.green,
-                                                    size: 20,
-                                                  )
-                                                else
-                                                  IconButton(
-                                                    icon: const Icon(
-                                                      Icons.download,
-                                                      size: 20,
-                                                    ),
-                                                    onPressed: () async {
-                                                      await _downloadAndPlay(
-                                                        url,
-                                                        reciterNames[i],
-                                                      );
-                                                      setState(
-                                                        () =>
-                                                            downloadedMap[url] =
-                                                                true,
-                                                      );
-                                                    },
-                                                  ),
-                                                if (isSaved)
-                                                  const Padding(
-                                                    padding: EdgeInsets.only(
-                                                      left: 6,
-                                                    ),
-                                                    child: Icon(
-                                                      Icons.star,
-                                                      color: Colors.orange,
-                                                      size: 20,
-                                                    ),
-                                                  ),
-                                              ],
-                                            ),
-                                            onTap: () async {
-                                              await prefs.setString(
-                                                'saved_reciter',
-                                                url,
-                                              );
-                                              Navigator.pop(context);
 
-                                              final file =
-                                                  await _getLocalFile(url);
-                                              if (await file.exists()) {
-                                                _playAudio(file.path, url);
-                                              } else {
-                                                ScaffoldMessenger.of(
-                                                  context,
-                                                ).showSnackBar(
-                                                  const SnackBar(
-                                                    content: Text(
-                                                      'Audio not downloaded',
-                                                    ),
-                                                  ),
-                                                );
-                                              }
-                                            },
-                                          );
-                                        },
-                                      ),
-                                    ),
-                                  );
-                                },
-                              );
-                            },
-                          );
+
+                          // final prefs = await SharedPreferences.getInstance();
+                          // final savedReciterUrl = prefs.getString(
+                          //   'saved_reciter',
+                          // );
+                          // final downloadedMap =
+                          //     await _checkDownloadedStatus();
+                          //
+                          // await showDialog(
+                          //   context: context,
+                          //   builder: (context) {
+                          //     return StatefulBuilder(
+                          //       builder: (context, setState) {
+                          //         return AlertDialog(
+                          //           title: const Text("Select Reciter"),
+                          //           content: Column(
+                          //             mainAxisSize: MainAxisSize.min,
+                          //             children: List.generate(
+                          //               widget.surah.audioUrls.length,
+                          //               (i) {
+                          //                 final url =
+                          //                     widget.surah.audioUrls[i];
+                          //                 final isSaved =
+                          //                     url == savedReciterUrl;
+                          //                 final isDownloaded =
+                          //                     downloadedMap[url] ?? false;
+                          //
+                          //                 return ListTile(
+                          //                   title: Text(reciterNames[i]),
+                          //                   trailing: Row(
+                          //                     mainAxisSize: MainAxisSize.min,
+                          //                     children: [
+                          //                       if (isDownloaded)
+                          //                         const Icon(
+                          //                           Icons.check_circle,
+                          //                           color: Colors.green,
+                          //                           size: 20,
+                          //                         )
+                          //                       else
+                          //                         IconButton(
+                          //                           icon: const Icon(
+                          //                             Icons.download,
+                          //                             size: 20,
+                          //                           ),
+                          //                           onPressed: () async {
+                          //                             await _downloadAndPlay(
+                          //                               url,
+                          //                               reciterNames[i],
+                          //                             );
+                          //                             setState(
+                          //                               () =>
+                          //                                   downloadedMap[url] =
+                          //                                       true,
+                          //                             );
+                          //                           },
+                          //                         ),
+                          //                       if (isSaved)
+                          //                         const Padding(
+                          //                           padding: EdgeInsets.only(
+                          //                             left: 6,
+                          //                           ),
+                          //                           child: Icon(
+                          //                             Icons.star,
+                          //                             color: Colors.orange,
+                          //                             size: 20,
+                          //                           ),
+                          //                         ),
+                          //                     ],
+                          //                   ),
+                          //                   onTap: () async {
+                          //                     await prefs.setString(
+                          //                       'saved_reciter',
+                          //                       url,
+                          //                     );
+                          //                     Navigator.pop(context);
+                          //
+                          //                     final file =
+                          //                         await _getLocalFile(url);
+                          //                     if (await file.exists()) {
+                          //                       _playAudio(file.path, url);
+                          //                     } else {
+                          //                       ScaffoldMessenger.of(
+                          //                         context,
+                          //                       ).showSnackBar(
+                          //                         const SnackBar(
+                          //                           content: Text(
+                          //                             'Audio not downloaded',
+                          //                           ),
+                          //                         ),
+                          //                       );
+                          //                     }
+                          //                   },
+                          //                 );
+                          //               },
+                          //             ),
+                          //           ),
+                          //         );
+                          //       },
+                          //     );
+                          //   },
+                          // );
                         },
                       ),
                     ],
@@ -795,7 +805,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                     children: [
                       Text(
                         "Reading Goal: ${(dailyProgress.listenedSeconds / 60).floor()} / ${dailyProgress.goalMinutes} min",
-                        style: const TextStyle(fontWeight: FontWeight.bold),
+                        style: TextStyle(fontWeight: FontWeight.bold,color: selectedTheme ==0?Colors.black:Colors.white,),
                       ),
                       const SizedBox(width: 8),
                       SizedBox(
@@ -804,7 +814,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                         child: CircularProgressIndicator(
                           value: progress,
                           strokeWidth: 4,
-                          backgroundColor: Colors.grey.withOpacity(0.25),
+                          backgroundColor:selectedTheme ==0?Colors.grey.withOpacity(0.25):Colors.white,
                           valueColor: const AlwaysStoppedAnimation<Color>(
                             Color(0xFF00BCDD),
                           ),
@@ -825,14 +835,14 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                   ),
                 ),
                 SizedBox(height: 48),
-                 Text(widget.surah.arName,style: TextStyle(fontSize: 16,fontWeight: FontWeight.w600),),
+                 Text(widget.surah.arName,style: TextStyle(fontSize: 24,fontWeight: FontWeight.w600),),
                 SizedBox(height: 32),
 
 
 
                 /// 🔹 LIST
                 SizedBox(
-                  height: 620,
+                  height: 580,
                   child: ListView.builder(
                     padding: EdgeInsets.zero,
                     controller: _scrollController,
@@ -844,88 +854,114 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                       final isHighlighted = highlightedIndex == index;
                       final id = ayah.ayah;
 
-                      return GestureDetector(
-                        onTap: () async {
-                          await showModalBottomSheet(
-                            context: context,
-                            builder: (_) => _ayahBottomSheet(index, ayah),
-                          );
-                        },
-                        child: Container(
-                          key: _itemKeys[index],
-                          margin: const EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 6,
-                          ),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: isHighlighted
-                                ? Color(0xffC8E6C9)
-                                : Colors.white.withOpacity(0.85),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: isHighlighted
-                                  ? Color(0xffC8E6C9)
-                                  : Colors.grey.shade300,
-                              width: isHighlighted ? 2 : 1,
+                      return Padding(
+                        padding:  EdgeInsets.only(left: 20,right: 20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(height: 10,),
+                            Row(
+                              children: [
+                                Padding(
+                                  padding:  EdgeInsets.only(left:20),
+                                  child: Row(
+                                    children: [
+                                      CustomText(text: "Aya 1 : ${index+1}",color: selectedTheme ==0?Color(0xff364153):Colors.white,fontSize: 12,fontWeight: FontWeight.w500,),
+                                      Icon(Icons.keyboard_arrow_down_rounded,size: 18,color: selectedTheme ==0?Color(0xff364153):Colors.white),
+                                    ],
+                                  ),
+                                ),
+                              ],
                             ),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              // Sura icon with number
-                              Stack(
-                                children: [
-                                  SizedBox(
-                                    height: 35,
-                                    width: 35,
-                                    child: SvgPicture.asset(
-                                      "assets/icon/sura_icon_1.svg",
-                                    ),
+                            SizedBox(height: 10,),
+                            GestureDetector(
+                              onTap: () async {
+                                await showModalBottomSheet(
+                                  context: context,
+                                  builder: (_) => _ayahBottomSheet(index, ayah),
+                                );
+                              },
+                              child: Container(
+                                width: double.infinity,
+                                key: _itemKeys[index],
+                                margin: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 6,
+                                ),
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: isHighlighted
+                                      ? Color(0xffC8E6C9)
+                                      : Colors.white.withOpacity(0.85),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: isHighlighted
+                                        ? Color(0xffC8E6C9)
+                                        : Colors.grey.shade300,
+                                    width: isHighlighted ? 2 : 1,
                                   ),
-                                  Positioned(
-                                    left: id < 10
-                                        ? 14
-                                        : id < 100
-                                        ? 11.5
-                                        : 10,
-                                    top: id < 100 ? 8 : 10,
-                                    child: CustomText(
-                                      text: toArabicNumber(id),
-                                      fontSize: id < 10
-                                          ? 14
-                                          : id < 100
-                                          ? 12
-                                          : 10,
-                                      fontWeight: FontWeight.w600,
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    // Sura icon with number
+                                    Stack(
+                                      children: [
+                                        SizedBox(
+                                          height: 35,
+                                          width: 35,
+                                          child: SvgPicture.asset(
+                                            "assets/icon/sura_icon_1.svg",
+                                          ),
+                                        ),
+                                        Positioned(
+                                          left: id < 10
+                                              ? 14
+                                              : id < 100
+                                              ? 11.5
+                                              : 10,
+                                          top: id < 100 ? 8 : 10,
+                                          child: CustomText(
+                                            text: toArabicNumber(id),
+                                            fontSize: id < 10
+                                                ? 14
+                                                : id < 100
+                                                ? 12
+                                                : 10,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
                                     ),
-                                  ),
-                                ],
-                              ),
 
-                              const SizedBox(height: 12),
+                                    const SizedBox(height: 12),
 
-                              // Arabic text
-                              Text(
-                                ayah.arabic,
-                                style: TextStyle(
-                                  fontWeight: isHighlighted
-                                      ? FontWeight.bold
-                                      : FontWeight.normal,
-                                  fontSize: isHighlighted ? 13 : 20,
+                                    // Arabic text
+                                    CustomText(text:
+                                      ayah.arabic,
+
+                                        fontWeight: isHighlighted
+                                            ? FontWeight.bold
+                                            : FontWeight.normal,
+                                        fontSize: isHighlighted ? 22 : 20,
+                                      textAlign: TextAlign.end,
+
+
+                                    ),
+
+                                    // Bookmark icon
+                                    if (bookmarks.any(
+                                          (b) => b.suraId == widget.surah.id && b.ayahId == ayah.ayah,
+                                    ))
+                                      const Icon(
+                                        Icons.bookmark,
+                                        color: Colors.orange,
+                                      ),
+                                  ],
                                 ),
                               ),
-
-                              // Bookmark icon
-                              if (bookmarks.any(
-                                    (b) => b.suraId == widget.surah.id && b.ayahId == ayah.ayah,
-                              ))
-                                const Icon(
-                                  Icons.bookmark,
-                                  color: Colors.orange,
-                                ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
                       );
                     },
@@ -941,59 +977,121 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                 left: 16,
                 right: 16,
                 child: Container(
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.95),
-                    borderRadius: BorderRadius.circular(14),
+                    color: const Color(0xFFD9CFB5), // beige color like design
+                    borderRadius: BorderRadius.circular(18),
                     boxShadow: [
                       BoxShadow(
                         color: Colors.black.withOpacity(0.15),
                         blurRadius: 10,
+                        offset: const Offset(0, 4),
                       ),
                     ],
                   ),
                   child: Row(
                     children: [
+                      /// ▶️ Play Button
                       Consumer(
                         builder: (context, ref, _) {
-                          final playingAsync = ref.watch(
-                            playingStreamProvider,
-                          );
+                          final playingAsync = ref.watch(playingStreamProvider);
                           final isPlaying = playingAsync.when(
-                            data: (playing) => playing,
+                            data: (p) => p,
                             loading: () => false,
                             error: (_, __) => false,
                           );
 
-                          return IconButton(
-                            onPressed: () async {
-                              final player = ref.read(audioPlayerProvider);
-                              if (isPlaying) {
-                                await player.pause();
-                              } else {
-                                await player.play();
-                              }
-                            },
-                            icon: Icon(
-                              isPlaying
-                                  ? Icons.pause_circle
-                                  : Icons.play_circle,
-                              size: 36,
+                          return Container(
+                            decoration: const BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Color(0xFF2F3A4A), // dark circle
+                            ),
+                            child: IconButton(
+                              onPressed: () async {
+                                final player = ref.read(audioPlayerProvider);
+                                if (isPlaying) {
+                                  await player.pause();
+                                } else {
+                                  await player.play();
+                                }
+                              },
+                              icon: Icon(
+                                isPlaying ? Icons.pause : Icons.play_arrow,
+                                color: Colors.white,
+                              ),
                             ),
                           );
                         },
                       ),
 
+                      const SizedBox(width: 12),
+
+                      /// 🎵 Title + Subtitle
                       Expanded(
-                        child: Text(
-                          bottomPlayer.reciterName ?? '',
-                          overflow: TextOverflow.ellipsis,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              bottomPlayer.reciterName ?? "Saad Al-Hamdi",
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
+                                color: Color(0xFF2F3A4A),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(width: 8),
+
+                      /// ⚡ Speed Chip (1.5x)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.7),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Text(
+                          "1.5x",
+                          style: TextStyle(
+                            fontWeight: FontWeight.w500,
+                            fontSize: 12,
+                            color: Color(0xFF2F3A4A),
+                          ),
+                        ),
+                      ),
+
+                      const SizedBox(width: 10),
+
+                      /// ⏮ Previous
+                      IconButton(
+                        onPressed: () {
+                          // TODO: previous
+                        },
+                        icon: const Icon(
+                          Icons.skip_previous,
+                          color: Color(0xFF2F3A4A),
+                        ),
+                      ),
+
+                      /// ⏭ Next
+                      IconButton(
+                        onPressed: () {
+                          // TODO: next
+                        },
+                        icon: const Icon(
+                          Icons.skip_next,
+                          color: Color(0xFF2F3A4A),
                         ),
                       ),
                     ],
                   ),
                 ),
-              ),
+              )
           ],
         ),
       ),
@@ -1212,5 +1310,14 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
         .split('')
         .map((e) => arabicDigits[int.parse(e)])
         .join();
+  }
+
+  void showSettingsBottomSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const SettingsBottomSheet(),
+    );
   }
 }
