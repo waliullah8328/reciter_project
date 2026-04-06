@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:reciter_project/screen/widget/weekly_report_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../common/custom_text.dart';
 import '../../model/user_reciter_model.dart';
 
 /// ================= BOOKMARK MODEL =================
@@ -841,6 +842,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                       final ayah = widget.surah.ayahs[index];
                       _itemKeys[index] = _itemKeys[index] ?? GlobalKey();
                       final isHighlighted = highlightedIndex == index;
+                      final id = ayah.ayah;
 
                       return GestureDetector(
                         onTap: () async {
@@ -869,7 +871,9 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                             ),
                           ),
                           child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
+                              // Sura icon with number
                               Stack(
                                 children: [
                                   SizedBox(
@@ -881,50 +885,45 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                                   ),
                                   Positioned(
                                     left: id < 10
-                                        ? 14.w
+                                        ? 14
                                         : id < 100
-                                        ? 11.5.w
-                                        : 10.w,
-                                    top: id < 100 ? 8.h : 10.h,
+                                        ? 11.5
+                                        : 10,
+                                    top: id < 100 ? 8 : 10,
                                     child: CustomText(
                                       text: toArabicNumber(id),
                                       fontSize: id < 10
-                                          ? 14.sp
+                                          ? 14
                                           : id < 100
-                                          ? 12.sp
-                                          : 10.sp,
+                                          ? 12
+                                          : 10,
                                       fontWeight: FontWeight.w600,
                                     ),
                                   ),
                                 ],
                               ),
-                              ListTile(
-                                contentPadding: EdgeInsets.zero,
-                                title: Text(
-                                  ayah.arabic,
-                                  style: TextStyle(
-                                    fontWeight: isHighlighted
-                                        ? FontWeight.bold
-                                        : FontWeight.normal,
-                                    fontSize: isHighlighted ? 17 : 16,
-                                  ),
+
+                              const SizedBox(height: 12),
+
+                              // Arabic text
+                              Text(
+                                ayah.arabic,
+                                style: TextStyle(
+                                  fontWeight: isHighlighted
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
+                                  fontSize: isHighlighted ? 13 : 20,
                                 ),
-                                subtitle: Padding(
-                                  padding: const EdgeInsets.only(top: 4),
-                                  child: Text(ayah.english),
-                                ),
-                                trailing:
-                                    bookmarks.any(
-                                      (b) =>
-                                          b.suraId == widget.surah.id &&
-                                          b.ayahId == ayah.ayah,
-                                    )
-                                    ? const Icon(
-                                        Icons.bookmark,
-                                        color: Colors.orange,
-                                      )
-                                    : null,
                               ),
+
+                              // Bookmark icon
+                              if (bookmarks.any(
+                                    (b) => b.suraId == widget.surah.id && b.ayahId == ayah.ayah,
+                              ))
+                                const Icon(
+                                  Icons.bookmark,
+                                  color: Colors.orange,
+                                ),
                             ],
                           ),
                         ),
@@ -1205,5 +1204,13 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
         );
       },
     );
+  }
+  String toArabicNumber(int number) {
+    const arabicDigits = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
+    return number
+        .toString()
+        .split('')
+        .map((e) => arabicDigits[int.parse(e)])
+        .join();
   }
 }
