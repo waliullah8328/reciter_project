@@ -21,6 +21,7 @@ dependencies:
   dio: ^5.4.0
   path_provider: ^2.1.2
   crypto: ^3.0.2
+  flutter_svg: ^2.2.3
 
 dev_dependencies:
   flutter_test:
@@ -34,7 +35,9 @@ flutter:
   uses-material-design: true
 
   assets:
-     - assets/json/reciter_2.json
+    - assets/image/
+    - assets/icon/
+    - assets/json/reciter_2.json
 
 
   # An image asset can refer to one or more resolution-specific "variants", see
