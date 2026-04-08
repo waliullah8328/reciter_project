@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:reciter_project/screen/widget/reciter_select_screen.dart';
 import 'package:reciter_project/screen/widget/settings_bottom_sheet.dart';
 import 'package:reciter_project/screen/widget/weekly_report_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -564,7 +565,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
     );
 
     return Scaffold(
-      backgroundColor: selectedTheme ==0? Colors.white:Color(0xff101828),
+      backgroundColor: selectedTheme ==0? Colors.white:selectedTheme == 1?Color(0xffF5F1E8):Color(0xff101828),
       // appBar: AppBar(
       //   title: Text(widget.surah.name),
       //   actions: [
@@ -642,7 +643,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
       body: Container(
         decoration: BoxDecoration(
           image: DecorationImage(
-            image: AssetImage(selectedTheme == 0?"assets/image/white_quran_back_ground.png":"assets/image/black_theme.png"),
+            image: AssetImage(selectedTheme == 0?"assets/image/white_quran_back_ground.png":selectedTheme == 1?"assets/image/paper_theme.png":"assets/image/black_theme.png"),
             fit: BoxFit.fitHeight,
           ),
         ),
@@ -657,7 +658,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                     children: [
                       GestureDetector(
                         onTap: () => Navigator.pop(context),
-                        child:  Icon(Icons.arrow_back,color: selectedTheme ==0?Colors.black:Colors.white,),
+                        child:  Icon(Icons.arrow_back, color: selectedTheme ==0?Colors.black:selectedTheme ==1?Colors.black:Colors.white,),
                       ),
                       const SizedBox(width: 10),
 
@@ -667,7 +668,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                           style:  TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,
-                            color: selectedTheme ==0?Colors.black:Colors.white,
+                             color: selectedTheme ==0?Colors.black:selectedTheme ==1?Colors.black:Colors.white,
                           ),
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -684,13 +685,17 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                       // ),
 
                       IconButton(
-                        icon:  Icon(Icons.settings,color: selectedTheme ==0?Colors.black:Colors.white,),
+                        icon:  Icon(Icons.settings,color: selectedTheme ==0?Colors.black:selectedTheme ==1?Colors.black:Colors.white,),
                         onPressed: () async {
-                          showSettingsBottomSheet( context);
-
-
-
-
+                           showSettingsBottomSheet( context,audioUrls: widget.surah.audioUrls,
+                             reciterNames: reciterNames,
+                             downloadAndPlay: _downloadAndPlay,
+                             getLocalFile: _getLocalFile,
+                             playAudio: _playAudio,);
+                          //
+                          //
+                          //
+                          //
                           // final prefs = await SharedPreferences.getInstance();
                           // final savedReciterUrl = prefs.getString(
                           //   'saved_reciter',
@@ -791,6 +796,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                           //     );
                           //   },
                           // );
+
                         },
                       ),
                     ],
@@ -805,7 +811,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                     children: [
                       Text(
                         "Reading Goal: ${(dailyProgress.listenedSeconds / 60).floor()} / ${dailyProgress.goalMinutes} min",
-                        style: TextStyle(fontWeight: FontWeight.bold,color: selectedTheme ==0?Colors.black:Colors.white,),
+                        style: TextStyle(fontWeight: FontWeight.bold,color: selectedTheme ==0?Colors.black:selectedTheme ==1?Colors.black:Colors.white,),
                       ),
                       const SizedBox(width: 8),
                       SizedBox(
@@ -866,8 +872,8 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                                   padding:  EdgeInsets.only(left:20),
                                   child: Row(
                                     children: [
-                                      CustomText(text: "Aya 1 : ${index+1}",color: selectedTheme ==0?Color(0xff364153):Colors.white,fontSize: 12,fontWeight: FontWeight.w500,),
-                                      Icon(Icons.keyboard_arrow_down_rounded,size: 18,color: selectedTheme ==0?Color(0xff364153):Colors.white),
+                                      CustomText(text: "Aya 1 : ${index+1}",color: selectedTheme ==0?Color(0xff364153):selectedTheme ==1?Color(0xff364153):Colors.white,fontSize: 12,fontWeight: FontWeight.w500,),
+                                      Icon(Icons.keyboard_arrow_down_rounded,size: 18,color: selectedTheme ==0?Color(0xff364153):selectedTheme ==1?Color(0xff364153):Colors.white),
                                     ],
                                   ),
                                 ),
@@ -892,12 +898,12 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                                 decoration: BoxDecoration(
                                   color: isHighlighted
                                       ? Color(0xffC8E6C9)
-                                      : Colors.white.withOpacity(0.85),
+                                      : selectedTheme ==1?Color(0xffF5F1E8):Color(0xff101828),
                                   borderRadius: BorderRadius.circular(10),
                                   border: Border.all(
                                     color: isHighlighted
                                         ? Color(0xffC8E6C9)
-                                        : Colors.grey.shade300,
+                                        : selectedTheme ==1?Color(0xffF5F1E8):Color(0xff101828),
                                     width: isHighlighted ? 2 : 1,
                                   ),
                                 ),
@@ -912,6 +918,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                                           width: 35,
                                           child: SvgPicture.asset(
                                             "assets/icon/sura_icon_1.svg",
+                                            colorFilter: ColorFilter.mode(Color(0xff2F7D33), BlendMode.srcIn),
                                           ),
                                         ),
                                         Positioned(
@@ -929,6 +936,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                                                 ? 12
                                                 : 10,
                                             fontWeight: FontWeight.w600,
+                                              color: Color(0xff2F7D33)
                                           ),
                                         ),
                                       ],
@@ -945,6 +953,7 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
                                             : FontWeight.normal,
                                         fontSize: isHighlighted ? 22 : 20,
                                       textAlign: TextAlign.end,
+                                        color: isHighlighted?Color(0xff101828):selectedTheme ==0?Color(0xff364153):selectedTheme ==1?Color(0xff364153):Colors.white
 
 
                                     ),
@@ -1312,12 +1321,39 @@ class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
         .join();
   }
 
-  void showSettingsBottomSheet(BuildContext context) {
+  void showSettingsBottomSheet(
+      BuildContext context, {
+        required List<String> audioUrls,
+        required List<String> reciterNames,
+        required Future<void> Function(String url, String name) downloadAndPlay,
+        required Future<File> Function(String url) getLocalFile,
+        required Function(String path, String url) playAudio,
+      }) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => const SettingsBottomSheet(),
+
+      /// ✅ Important for full height + keyboard
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.9,
+        maxChildSize: 0.95,
+        minChildSize: 0.6,
+
+        builder: (context, scrollController) {
+          return SingleChildScrollView(
+            controller: scrollController,
+            child: SettingsBottomSheet(
+              audioUrls: audioUrls,
+              reciterNames: reciterNames,
+              downloadAndPlay: downloadAndPlay,
+              getLocalFile: getLocalFile,
+              playAudio: playAudio,
+            ),
+          );
+        },
+      ),
     );
   }
 }
