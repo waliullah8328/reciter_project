@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -8,14 +9,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:reciter_project/screen/widget/reciter_select_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import 'package:reciter_project/screen/widget/settings_bottom_sheet.dart';
 import 'package:reciter_project/screen/widget/weekly_report_screen.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../common/custom_text.dart';
 import '../../model/settings_view_model.dart';
 import '../../model/user_reciter_model.dart';
+
+final playbackSpeedProvider = StateProvider<double>((ref) => 0.5);
 
 /// ================= BOOKMARK MODEL =================
 class Bookmark {
@@ -46,43 +49,105 @@ class Bookmark {
   };
 }
 
+/// ================= AYAH SELECTION HELPER =================
+class AyahSelector {
+  /// Select ayah index by time range (for audio sync) - WITH TOLERANCE
+  static int? findByTime(
+      List<Ayah> ayahs,
+      double currentTime,
+      int reciterIndex,
+      double audioDuration,
+      ) {
+    const tolerance = 0.15; // 150ms tolerance for floating point precision
+
+    for (int i = 0; i < ayahs.length; i++) {
+      final ayah = ayahs[i];
+
+      if (ayah.timings.length <= reciterIndex ||
+          ayah.timings[reciterIndex].length < 1)
+        continue;
+
+      final start = ayah.timings[reciterIndex][0];
+      final end = ayah.timings[reciterIndex].length > 1
+          ? ayah.timings[reciterIndex][1]
+          : (i == ayahs.length - 1 ? audioDuration : null);
+
+      if (end != null) {
+        if (currentTime >= start - tolerance &&
+            currentTime <= end + tolerance) {
+          return i;
+        }
+      } else {
+        if (currentTime >= start - tolerance) {
+          return i;
+        }
+      }
+    }
+
+    // Fallback: nearest start time with tolerance
+    int? nearestIndex;
+    double minDiff = double.infinity;
+    for (int i = 0; i < ayahs.length; i++) {
+      final ayah = ayahs[i];
+      if (ayah.timings.length <= reciterIndex ||
+          ayah.timings[reciterIndex].isEmpty)
+        continue;
+      final start = ayah.timings[reciterIndex][0];
+      final diff = (currentTime - start).abs();
+      if (diff < minDiff && currentTime >= start - 0.5) {
+        minDiff = diff;
+        nearestIndex = i;
+      }
+    }
+    return nearestIndex;
+  }
+
+  static int? findById(List<Ayah> ayahs, int targetAyahNumber) {
+    return ayahs.indexWhere((ayah) => ayah.ayah == targetAyahNumber);
+  }
+
+  static double? getStartTime(Ayah ayah, int reciterIndex) {
+    if (ayah.timings.length <= reciterIndex ||
+        ayah.timings[reciterIndex].isEmpty)
+      return null;
+    return ayah.timings[reciterIndex][0];
+  }
+
+  static double? getEndTime(Ayah ayah, int reciterIndex) {
+    if (ayah.timings.length <= reciterIndex ||
+        ayah.timings[reciterIndex].length < 2)
+      return null;
+    return ayah.timings[reciterIndex][1];
+  }
+}
+
 /// ================= RIVERPOD PROVIDERS =================
 
-// Audio player
 final audioPlayerProvider = Provider<AudioPlayer>((ref) {
   final player = AudioPlayer();
   ref.onDispose(() => player.dispose());
   return player;
 });
 
-// Daily goal & listened seconds
 final dailyProgressProvider =
-    StateNotifierProvider<DailyProgressNotifier, DailyProgressState>(
+StateNotifierProvider<DailyProgressNotifier, DailyProgressState>(
       (ref) => DailyProgressNotifier(),
-    );
+);
 
-// Bookmarks with sura and ayah info
 final bookmarksProvider =
-    StateNotifierProvider<BookmarksNotifier, List<Bookmark>>(
+StateNotifierProvider<BookmarksNotifier, List<Bookmark>>(
       (ref) => BookmarksNotifier(),
-    );
+);
 
-// Highlighted ayah
 final highlightedAyahProvider = StateProvider<int>((ref) => -1);
 
-// Playback speed
-final playbackSpeedProvider = StateProvider<double>((ref) => 0.5);
-
-// Bottom player visibility and reciter
 final bottomPlayerProvider =
-    StateNotifierProvider<BottomPlayerNotifier, BottomPlayerState>(
+StateNotifierProvider<BottomPlayerNotifier, BottomPlayerState>(
       (ref) => BottomPlayerNotifier(),
-    );
+);
 
-// Current reciter URL
 final currentReciterProvider = StateProvider<String?>((ref) => null);
 
-// Playing state stream provider for real-time play/pause button updates
 final playingStreamProvider = StreamProvider<bool>((ref) {
   final player = ref.watch(audioPlayerProvider);
   return player.playingStream;
@@ -93,12 +158,10 @@ final playingStreamProvider = StreamProvider<bool>((ref) {
 class DailyProgressState {
   final int goalMinutes;
   final int listenedSeconds;
-
   DailyProgressState({
     required this.goalMinutes,
     required this.listenedSeconds,
   });
-
   DailyProgressState copyWith({int? goalMinutes, int? listenedSeconds}) {
     return DailyProgressState(
       goalMinutes: goalMinutes ?? this.goalMinutes,
@@ -109,7 +172,7 @@ class DailyProgressState {
 
 class DailyProgressNotifier extends StateNotifier<DailyProgressState> {
   DailyProgressNotifier()
-    : super(DailyProgressState(goalMinutes: 5, listenedSeconds: 0)) {
+      : super(DailyProgressState(goalMinutes: 5, listenedSeconds: 0)) {
     _load();
   }
 
@@ -151,11 +214,11 @@ class BookmarksNotifier extends StateNotifier<List<Bookmark>> {
   }
 
   Future<void> toggle(
-    int suraId,
-    int ayahId,
-    String arabicText,
-    String englishText,
-  ) async {
+      int suraId,
+      int ayahId,
+      String arabicText,
+      String englishText,
+      ) async {
     final prefs = await SharedPreferences.getInstance();
     final bookmark = Bookmark(
       suraId: suraId,
@@ -163,18 +226,15 @@ class BookmarksNotifier extends StateNotifier<List<Bookmark>> {
       arabicText: arabicText,
       englishText: englishText,
     );
-
     final newList = List<Bookmark>.from(state);
     final index = newList.indexWhere(
-      (b) => b.suraId == suraId && b.ayahId == ayahId,
+          (b) => b.suraId == suraId && b.ayahId == ayahId,
     );
-
     if (index != -1) {
       newList.removeAt(index);
     } else {
       newList.add(bookmark);
     }
-
     state = newList;
     await prefs.setStringList(
       'bookmarks',
@@ -185,19 +245,42 @@ class BookmarksNotifier extends StateNotifier<List<Bookmark>> {
   bool isBookmarked(int suraId, int ayahId) {
     return state.any((b) => b.suraId == suraId && b.ayahId == ayahId);
   }
+
+  Future<void> navigateToBookmark(
+      BuildContext context,
+      Bookmark bookmark,
+      List<Surah> allSurahs,
+      Function(Surah, int) onSurahLoaded,
+      ) async {
+    final surahIndex = allSurahs.indexWhere((s) => s.id == bookmark.suraId);
+    if (surahIndex == -1) return;
+    final surah = allSurahs[surahIndex];
+    final ayahIndex = AyahSelector.findById(surah.ayahs, bookmark.ayahId);
+    if (ayahIndex == -1) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SurahDetailScreen(
+          surah: surah,
+          allSurahs: allSurahs,
+          surahIndex: surahIndex,
+        ),
+      ),
+    );
+    await Future.delayed(const Duration(milliseconds: 500));
+    onSurahLoaded(surah, ayahIndex!);
+  }
 }
 
 class BottomPlayerState {
   final bool visible;
   final String? reciterName;
-
   BottomPlayerState({required this.visible, this.reciterName});
 }
 
 class BottomPlayerNotifier extends StateNotifier<BottomPlayerState> {
   BottomPlayerNotifier()
-    : super(BottomPlayerState(visible: false, reciterName: null));
-
+      : super(BottomPlayerState(visible: false, reciterName: null));
   void show(String reciterName) =>
       state = BottomPlayerState(visible: true, reciterName: reciterName);
   void hide() => state = BottomPlayerState(visible: false, reciterName: null);
@@ -206,1091 +289,6 @@ class BottomPlayerNotifier extends StateNotifier<BottomPlayerState> {
 }
 
 /// ================= SURAH DETAIL SCREEN =================
-
-// class SurahDetailScreen extends ConsumerStatefulWidget {
-//   final Surah surah;
-//   final List<Surah> allSurahs; // Add list of all surahs for auto-play next
-//   final int surahIndex; // Current surah index in the list
-//
-//   const SurahDetailScreen({
-//     super.key,
-//     required this.surah,
-//     required this.allSurahs,
-//     required this.surahIndex,
-//   });
-//
-//   @override
-//   ConsumerState<SurahDetailScreen> createState() => _SurahDetailScreenState();
-// }
-//
-// class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
-//   final ScrollController _scrollController = ScrollController();
-//   final Map<int, GlobalKey> _itemKeys = {};
-//   int? _lastScrolledIndex;
-//
-//   // Store position listener subscription to cancel when needed
-//   dynamic _positionStreamSubscription;
-//
-//   // Track last incremented second to avoid multiple increments per second
-//   int _lastIncrementedSecond = -1;
-//
-//   // Local playing state for immediate UI feedback
-//   bool _localIsPlaying = false;
-//
-//   final List<String> reciterNames = [
-//     "Abdulbasit Abdulsamad",
-//     "Abdullah Al-Johany",
-//     "Ibrahim Al-Akdar",
-//     "Ali Hajjaj Alsouasi",
-//   ];
-//
-//   /// ================= AUTO-PLAY NEXT SURAH =================
-//   Future<void> _autoPlayNextSurah() async {
-//     try {
-//       // Check if there's a next surah
-//       if (widget.surahIndex < widget.allSurahs.length - 1) {
-//         final nextSurah = widget.allSurahs[widget.surahIndex + 1];
-//         final reciterUrl = ref.read(currentReciterProvider);
-//
-//         if (reciterUrl != null) {
-//           final file = await _getLocalFile(reciterUrl);
-//
-//           if (await file.exists()) {
-//             print('Auto-playing next surah: ${nextSurah.name}');
-//
-//             // Navigate to next surah
-//             Navigator.pushReplacement(
-//               context,
-//               MaterialPageRoute(
-//                 builder: (_) => SurahDetailScreen(
-//                   surah: nextSurah,
-//                   allSurahs: widget.allSurahs,
-//                   surahIndex: widget.surahIndex + 1,
-//                 ),
-//               ),
-//             );
-//
-//             // Delay to ensure navigation is complete
-//             await Future.delayed(const Duration(milliseconds: 500));
-//           } else {
-//             print('Next surah audio not downloaded');
-//           }
-//         }
-//       } else {
-//         print('No more surahs to play');
-//       }
-//     } catch (e) {
-//       print('Error auto-playing next surah: $e');
-//     }
-//   }
-//
-//   /// ================= FILE HANDLING =================
-//   Future<File> _getLocalFile(String url) async {
-//     final dir = await getApplicationDocumentsDirectory();
-//     final bytes = utf8.encode(url);
-//     final filename = "${sha1.convert(bytes)}.mp3";
-//     return File('${dir.path}/$filename');
-//   }
-//
-//   Future<Map<String, bool>> _checkDownloadedStatus() async {
-//     final map = <String, bool>{};
-//     for (String url in widget.surah.audioUrls) {
-//       final file = await _getLocalFile(url);
-//       map[url] = await file.exists();
-//     }
-//     return map;
-//   }
-//
-//   Future<void> _downloadAndPlay(String url, String reciterName) async {
-//     final file = await _getLocalFile(url);
-//     try {
-//       ScaffoldMessenger.of(
-//         context,
-//       ).showSnackBar(const SnackBar(content: Text('Downloading...')));
-//       await Dio().download(url, file.path);
-//       ScaffoldMessenger.of(
-//         context,
-//       ).showSnackBar(SnackBar(content: Text('Downloaded $reciterName')));
-//       _playAudio(file.path, url);
-//     } catch (e) {
-//       ScaffoldMessenger.of(
-//         context,
-//       ).showSnackBar(const SnackBar(content: Text('Download failed')));
-//     }
-//   }
-//
-//   void onAyahTap(int index) async {
-//     final player = ref.read(audioPlayerProvider);
-//     final reciterUrl = ref.read(currentReciterProvider);
-//
-//     if (reciterUrl == null) return;
-//
-//     final reciterIndex = widget.surah.audioUrls.indexOf(reciterUrl);
-//     if (reciterIndex == -1) return;
-//
-//     final ayah = widget.surah.ayahs[index];
-//
-//     if (ayah.timings.length <= reciterIndex ||
-//         ayah.timings[reciterIndex].isEmpty)
-//       return;
-//
-//     final startTime = ayah.timings[reciterIndex][0];
-//
-//     // 🔥 Fix starts here
-//     final wasPlaying = player.playing;
-//
-//     await player.seek(Duration(milliseconds: (startTime * 1000).toInt()));
-//
-//     if (wasPlaying) {
-//       await player.play();
-//     }
-//
-//     // Update UI
-//     ref.read(highlightedAyahProvider.notifier).state = index;
-//     _scrollToCurrentAyah(index);
-//   }
-//
-//   void _playAudio(
-//     String path, [
-//     String? reciterUrl,
-//     int? startingAyahIndex,
-//   ]) async {
-//     try {
-//       // Cancel previous listener
-//       await _positionStreamSubscription?.cancel();
-//
-//       // Reset last incremented second
-//       _lastIncrementedSecond = -1;
-//
-//       final player = ref.read(audioPlayerProvider);
-//
-//       // Stop any existing playback first
-//       try {
-//         if (player.playing) {
-//           await player.stop();
-//         }
-//       } catch (e) {
-//         print('Error stopping player: $e');
-//       }
-//
-//       final reciterIndex = reciterUrl != null
-//           ? widget.surah.audioUrls.indexOf(reciterUrl)
-//           : 0;
-//       final playbackSpeed = ref.read(playbackSpeedProvider);
-//
-//       // Determine starting ayah (use provided index or start from 0)
-//       final initialAyahIndex = startingAyahIndex ?? 0;
-//
-//       // Highlight starting ayah immediately
-//       ref.read(highlightedAyahProvider.notifier).state = initialAyahIndex;
-//       _scrollToCurrentAyah(initialAyahIndex);
-//
-//       ref.read(bottomPlayerProvider.notifier).show(reciterNames[reciterIndex]);
-//       ref.read(currentReciterProvider.notifier).state =
-//           widget.surah.audioUrls[reciterIndex];
-//
-//       // Verify file exists
-//       final file = File(path);
-//       if (!await file.exists()) {
-//         print('Audio file does not exist: $path');
-//         ScaffoldMessenger.of(
-//           context,
-//         ).showSnackBar(const SnackBar(content: Text('Audio file not found')));
-//         return;
-//       }
-//
-//       // Set audio source
-//       await player.setFilePath(path);
-//       await player.setSpeed(playbackSpeed);
-//
-//       // If starting from a specific ayah, seek to that ayah's start time
-//       if (startingAyahIndex != null &&
-//           startingAyahIndex > 0 &&
-//           startingAyahIndex < widget.surah.ayahs.length) {
-//         final startingAyah = widget.surah.ayahs[startingAyahIndex];
-//         if (startingAyah.timings.length > reciterIndex &&
-//             startingAyah.timings[reciterIndex].length >= 1) {
-//           final startTime = startingAyah.timings[reciterIndex][0];
-//           await player.seek(Duration(milliseconds: (startTime * 1000).toInt()));
-//         }
-//       }
-//
-//       // Play audio
-//       await player.play();
-//       print('Audio playback started successfully');
-//
-//       // Listen to player state changes (completion detection)
-//       player.playerStateStream.listen((playerState) {
-//         // Check if audio has completed
-//         if (playerState.processingState == ProcessingState.completed) {
-//           print('Current surah audio finished, auto-playing next...');
-//           _autoPlayNextSurah();
-//         }
-//       });
-//
-//       // ================= Listen to audio position =================
-//       _positionStreamSubscription = player.positionStream.listen((
-//         position,
-//       ) async {
-//         final time = position.inMilliseconds / 1000.0;
-//         final currentSecond = time.floor();
-//
-//         final reciterUrl = ref.read(currentReciterProvider);
-//         if (reciterUrl == null) return;
-//
-//         final reciterIndex = widget.surah.audioUrls.indexOf(reciterUrl);
-//         if (reciterIndex == -1) return;
-//
-//         // Find matching ayah based on current time - check from beginning to find the correct one
-//         int matchedIndex = -1;
-//         for (int i = 0; i < widget.surah.ayahs.length; i++) {
-//           final ayah = widget.surah.ayahs[i];
-//
-//           // Skip if timing data is invalid
-//           if (ayah.timings.length <= reciterIndex ||
-//               ayah.timings[reciterIndex].isEmpty)
-//             continue;
-//           if (ayah.timings[reciterIndex].length < 2) continue;
-//
-//           final start = ayah.timings[reciterIndex][0];
-//           final end = ayah.timings[reciterIndex][1];
-//
-//           // Check if current position is within this ayah's time range
-//           if (time >= start && time <= end) {
-//             matchedIndex = i;
-//             break;
-//           }
-//         }
-//
-//         // Automatically update highlighting when ayah changes
-//         final currentHighlight = ref.read(highlightedAyahProvider);
-//         if (matchedIndex != -1 && currentHighlight != matchedIndex) {
-//           // Update highlighting immediately
-//           ref.read(highlightedAyahProvider.notifier).state = matchedIndex;
-//
-//           // Scroll to the new ayah with animation
-//           _scrollToCurrentAyah(matchedIndex);
-//         }
-//
-//         // Only increment listening time once per second when audio is actively playing
-//         if (player.playing && currentSecond != _lastIncrementedSecond) {
-//           _lastIncrementedSecond = currentSecond;
-//           await ref.read(dailyProgressProvider.notifier).incrementListening();
-//         }
-//       });
-//     } catch (e) {
-//       print('Error in _playAudio: $e');
-//       ScaffoldMessenger.of(
-//         context,
-//       ).showSnackBar(SnackBar(content: Text('Playback error: $e')));
-//     }
-//   }
-//
-//   void _scrollToCurrentAyah(int index) {
-//     if (_lastScrolledIndex == index) return;
-//     _lastScrolledIndex = index;
-//
-//     // Use post frame callback to ensure widget is rendered and visible
-//     WidgetsBinding.instance.addPostFrameCallback((_) {
-//       try {
-//         final key = _itemKeys[index];
-//         if (key == null) return;
-//
-//         final context = key.currentContext;
-//         if (context != null && context.mounted) {
-//           // Scroll smoothly to the ayah
-//           Scrollable.ensureVisible(
-//             context,
-//             alignment:
-//                 0.35, // Position ayah at 35% from top for better visibility
-//             duration: const Duration(milliseconds: 300),
-//             curve: Curves.easeInOut,
-//           );
-//         }
-//       } catch (e) {
-//         // Silently handle any scroll errors
-//         print('Scroll error: $e');
-//       }
-//     });
-//   }
-//
-//   @override
-//   void dispose() {
-//     _positionStreamSubscription?.cancel();
-//     _scrollController.dispose();
-//     super.dispose();
-//   }
-//
-//   @override
-//   void initState() {
-//     super.initState();
-//     if (widget.surah.audioUrls.isNotEmpty) {
-//       WidgetsBinding.instance.addPostFrameCallback((_) async {
-//         try {
-//           final prefs = await SharedPreferences.getInstance();
-//           final savedReciterUrl = prefs.getString('saved_reciter');
-//
-//           // Use saved reciter if available, otherwise use first
-//           final firstUrl = savedReciterUrl ?? widget.surah.audioUrls.first;
-//
-//           if (!widget.surah.audioUrls.contains(firstUrl)) {
-//             // Fallback to first if saved is invalid
-//             ref.read(currentReciterProvider.notifier).state =
-//                 widget.surah.audioUrls.first;
-//           } else {
-//             ref.read(currentReciterProvider.notifier).state = firstUrl;
-//           }
-//
-//           // Don't auto-play - wait for user to click play button
-//         } catch (e) {
-//           print('Error in initState: $e');
-//         }
-//       });
-//     }
-//   }
-//
-//   @override
-//   Widget build(BuildContext context) {
-//     final dailyProgress = ref.watch(dailyProgressProvider);
-//     final highlightedIndex = ref.watch(highlightedAyahProvider);
-//     final bookmarks = ref.watch(bookmarksProvider);
-//     final bottomPlayer = ref.watch(bottomPlayerProvider);
-//     final playbackSpeed = ref.watch(playbackSpeedProvider);
-//     final selectedTheme = ref.watch(settingsProvider.select((s)=>s.selectedTheme));
-//
-//     final goalSeconds = dailyProgress.goalMinutes * 60;
-//     final progress = (dailyProgress.listenedSeconds / goalSeconds).clamp(
-//       0.0,
-//       1.0,
-//     );
-//
-//     return Scaffold(
-//       backgroundColor: selectedTheme ==0? Colors.white:selectedTheme == 1?Color(0xffF5F1E8):Color(0xff101828),
-//
-//       body: Container(
-//         decoration: BoxDecoration(
-//           image: DecorationImage(
-//             image: AssetImage(selectedTheme == 0?"assets/image/white_quran_back_ground.png":selectedTheme == 1?"assets/image/paper_theme.png":"assets/image/black_theme.png"),
-//             fit: BoxFit.fitHeight,
-//           ),
-//         ),
-//         child: Stack(
-//           children: [
-//             Column(
-//               children: [
-//                 /// 🔹 HEADER
-//                 Padding(
-//                   padding:  EdgeInsets.only(left: 10,right: 16,top: 30,),
-//                   child: Row(
-//                     children: [
-//                       GestureDetector(
-//                         onTap: () => Navigator.pop(context),
-//                         child:  Icon(Icons.arrow_back, color: selectedTheme ==0?Colors.black:selectedTheme ==1?Colors.black:Colors.white,),
-//                       ),
-//                       const SizedBox(width: 10),
-//
-//                       Expanded(
-//                         child: Text(
-//                           widget.surah.name,
-//                           style:  TextStyle(
-//                             fontSize: 16,
-//                             fontWeight: FontWeight.bold,
-//                              color: selectedTheme ==0?Colors.black:selectedTheme ==1?Colors.black:Colors.white,
-//                           ),
-//                           overflow: TextOverflow.ellipsis,
-//                         ),
-//                       ),
-//
-//                       // IconButton(
-//                       //   icon: const Icon(Icons.bar_chart,size: ,),
-//                       //   onPressed: () => Navigator.push(
-//                       //     context,
-//                       //     MaterialPageRoute(
-//                       //       builder: (_) => const WeeklyReportScreen(),
-//                       //     ),
-//                       //   ),
-//                       // ),
-//
-//                       IconButton(
-//                         icon:  Icon(Icons.settings,color: selectedTheme ==0?Colors.black:selectedTheme ==1?Colors.black:Colors.white,),
-//                         onPressed: () async {
-//                            showSettingsBottomSheet( context,audioUrls: widget.surah.audioUrls,
-//                              reciterNames: reciterNames,
-//                              downloadAndPlay: _downloadAndPlay,
-//                              getLocalFile: _getLocalFile,
-//                              playAudio: _playAudio,);
-//                           //
-//                           //
-//                           //
-//                           //
-//                           // final prefs = await SharedPreferences.getInstance();
-//                           // final savedReciterUrl = prefs.getString(
-//                           //   'saved_reciter',
-//                           // );
-//                           // final downloadedMap =
-//                           //     await _checkDownloadedStatus();
-//                           //
-//                           // await showDialog(
-//                           //   context: context,
-//                           //   builder: (context) {
-//                           //     return StatefulBuilder(
-//                           //       builder: (context, setState) {
-//                           //         return AlertDialog(
-//                           //           title: const Text("Select Reciter"),
-//                           //           content: Column(
-//                           //             mainAxisSize: MainAxisSize.min,
-//                           //             children: List.generate(
-//                           //               widget.surah.audioUrls.length,
-//                           //               (i) {
-//                           //                 final url =
-//                           //                     widget.surah.audioUrls[i];
-//                           //                 final isSaved =
-//                           //                     url == savedReciterUrl;
-//                           //                 final isDownloaded =
-//                           //                     downloadedMap[url] ?? false;
-//                           //
-//                           //                 return ListTile(
-//                           //                   title: Text(reciterNames[i]),
-//                           //                   trailing: Row(
-//                           //                     mainAxisSize: MainAxisSize.min,
-//                           //                     children: [
-//                           //                       if (isDownloaded)
-//                           //                         const Icon(
-//                           //                           Icons.check_circle,
-//                           //                           color: Colors.green,
-//                           //                           size: 20,
-//                           //                         )
-//                           //                       else
-//                           //                         IconButton(
-//                           //                           icon: const Icon(
-//                           //                             Icons.download,
-//                           //                             size: 20,
-//                           //                           ),
-//                           //                           onPressed: () async {
-//                           //                             await _downloadAndPlay(
-//                           //                               url,
-//                           //                               reciterNames[i],
-//                           //                             );
-//                           //                             setState(
-//                           //                               () =>
-//                           //                                   downloadedMap[url] =
-//                           //                                       true,
-//                           //                             );
-//                           //                           },
-//                           //                         ),
-//                           //                       if (isSaved)
-//                           //                         const Padding(
-//                           //                           padding: EdgeInsets.only(
-//                           //                             left: 6,
-//                           //                           ),
-//                           //                           child: Icon(
-//                           //                             Icons.star,
-//                           //                             color: Colors.orange,
-//                           //                             size: 20,
-//                           //                           ),
-//                           //                         ),
-//                           //                     ],
-//                           //                   ),
-//                           //                   onTap: () async {
-//                           //                     await prefs.setString(
-//                           //                       'saved_reciter',
-//                           //                       url,
-//                           //                     );
-//                           //                     Navigator.pop(context);
-//                           //
-//                           //                     final file =
-//                           //                         await _getLocalFile(url);
-//                           //                     if (await file.exists()) {
-//                           //                       _playAudio(file.path, url);
-//                           //                     } else {
-//                           //                       ScaffoldMessenger.of(
-//                           //                         context,
-//                           //                       ).showSnackBar(
-//                           //                         const SnackBar(
-//                           //                           content: Text(
-//                           //                             'Audio not downloaded',
-//                           //                           ),
-//                           //                         ),
-//                           //                       );
-//                           //                     }
-//                           //                   },
-//                           //                 );
-//                           //               },
-//                           //             ),
-//                           //           ),
-//                           //         );
-//                           //       },
-//                           //     );
-//                           //   },
-//                           // );
-//
-//                         },
-//                       ),
-//                     ],
-//                   ),
-//                 ),
-//
-//                 /// 🔹 PROGRESS
-//                 Padding(
-//                   padding: EdgeInsets.only(left: 12,right: 12),
-//                   child: Row(
-//                     mainAxisAlignment: MainAxisAlignment.end,
-//                     children: [
-//                       Text(
-//                         "Reading Goal: ${(dailyProgress.listenedSeconds / 60).floor()} / ${dailyProgress.goalMinutes} min",
-//                         style: TextStyle(fontWeight: FontWeight.bold,color: selectedTheme ==0?Colors.black:selectedTheme ==1?Colors.black:Colors.white,),
-//                       ),
-//                       const SizedBox(width: 8),
-//                       SizedBox(
-//                         height: 16,
-//                         width: 16,
-//                         child: CircularProgressIndicator(
-//                           value: progress,
-//                           strokeWidth: 4,
-//                           backgroundColor:selectedTheme ==0?Colors.grey.withOpacity(0.25):Colors.white,
-//                           valueColor: const AlwaysStoppedAnimation<Color>(
-//                             Color(0xFF00BCDD),
-//                           ),
-//                         ),
-//                       ),
-//                       const SizedBox(width: 8),
-//                       GestureDetector(
-//                         onTap: (){
-//                           Navigator.push(
-//                             context,
-//                             MaterialPageRoute(
-//                               builder: (_) => const WeeklyReportScreen(),
-//                             ),
-//                           );
-//                         },
-//                           child: Icon(Icons.arrow_forward_ios_rounded,size: 16,)),
-//                     ],
-//                   ),
-//                 ),
-//                 SizedBox(height: 48),
-//                  Text(widget.surah.arName,style: TextStyle(fontSize: 24,fontWeight: FontWeight.w600),),
-//                 SizedBox(height: 32),
-//
-//
-//
-//                 /// 🔹 LIST
-//                 SizedBox(
-//                   height: 580,
-//                   child: ListView.builder(
-//                     padding: EdgeInsets.zero,
-//                     controller: _scrollController,
-//                     itemCount: widget.surah.ayahs.length,
-//                     key: Key('ayah_list_${widget.surah.id}'),
-//                     itemBuilder: (context, index) {
-//                       final ayah = widget.surah.ayahs[index];
-//                       _itemKeys[index] = _itemKeys[index] ?? GlobalKey();
-//                       final isHighlighted = highlightedIndex == index;
-//                       final id = ayah.ayah;
-//
-//                       return Padding(
-//                         padding:  EdgeInsets.only(left: 20,right: 20),
-//                         child: Column(
-//                           crossAxisAlignment: CrossAxisAlignment.start,
-//                           children: [
-//                             SizedBox(height: 10,),
-//                             Row(
-//                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
-//                               children: [
-//                                 Padding(
-//                                   padding:  EdgeInsets.only(left:20),
-//                                   child: Row(
-//                                     children: [
-//                                       CustomText(text: "Aya 1 : ${index+1}",color: selectedTheme ==0?Color(0xff364153):selectedTheme ==1?Color(0xff364153):Colors.white,fontSize: 12,fontWeight: FontWeight.w500,),
-//                                       Icon(Icons.keyboard_arrow_down_rounded,size: 18,color: selectedTheme ==0?Color(0xff364153):selectedTheme ==1?Color(0xff364153):Colors.white),
-//                                     ],
-//                                   ),
-//                                 ),
-//                                 // Bookmark icon
-//                                 if (bookmarks.any(
-//                                       (b) => b.suraId == widget.surah.id && b.ayahId == ayah.ayah,
-//                                 ))
-//                                   Padding(
-//                                     padding:  EdgeInsets.only(right: 20),
-//                                     child: const Icon(
-//                                       Icons.bookmark,
-//                                       color: Colors.orange,
-//                                     ),
-//                                   ),
-//                               ],
-//                             ),
-//                             SizedBox(height: 10,),
-//                             GestureDetector(
-//                               onTap: () async {
-//                                 await showModalBottomSheet(
-//                                   context: context,
-//                                   builder: (_) => _ayahBottomSheet(index, ayah),
-//                                 );
-//                               },
-//                               child: Container(
-//                                 width: double.infinity,
-//                                 key: _itemKeys[index],
-//                                 margin: const EdgeInsets.symmetric(
-//                                   horizontal: 20,
-//                                   vertical: 6,
-//                                 ),
-//                                 padding: const EdgeInsets.all(12),
-//                                 decoration: BoxDecoration(
-//                                   color: isHighlighted
-//                                       ? Color(0xffC8E6C9)
-//                                       : selectedTheme ==1?Color(0xffF5F1E8):Color(0xff101828),
-//                                   borderRadius: BorderRadius.circular(10),
-//                                   border: Border.all(
-//                                     color: isHighlighted
-//                                         ? Color(0xffC8E6C9)
-//                                         : selectedTheme ==1?Color(0xffF5F1E8):Color(0xff101828),
-//                                     width: isHighlighted ? 2 : 1,
-//                                   ),
-//                                 ),
-//                                 child: Column(
-//                                   crossAxisAlignment: CrossAxisAlignment.end,
-//                                   children: [
-//                                     // Sura icon with number
-//                                     Stack(
-//                                       children: [
-//                                         SizedBox(
-//                                           height: 35,
-//                                           width: 35,
-//                                           child: SvgPicture.asset(
-//                                             "assets/icon/sura_icon_1.svg",
-//                                             colorFilter: ColorFilter.mode(Color(0xff2F7D33), BlendMode.srcIn),
-//                                           ),
-//                                         ),
-//                                         Positioned(
-//                                           left: id < 10
-//                                               ? 14
-//                                               : id < 100
-//                                               ? 11.5
-//                                               : 10,
-//                                           top: id < 100 ? 8 : 10,
-//                                           child: CustomText(
-//                                             text: toArabicNumber(id),
-//                                             fontSize: id < 10
-//                                                 ? 14
-//                                                 : id < 100
-//                                                 ? 12
-//                                                 : 10,
-//                                             fontWeight: FontWeight.w600,
-//                                               color: Color(0xff2F7D33)
-//                                           ),
-//                                         ),
-//                                       ],
-//                                     ),
-//
-//                                     const SizedBox(height: 12),
-//
-//                                     // Arabic text
-//                                     CustomText(text:
-//                                       ayah.arabic,
-//
-//                                         fontWeight: isHighlighted
-//                                             ? FontWeight.bold
-//                                             : FontWeight.normal,
-//                                         fontSize: isHighlighted ? 26 : 24,
-//                                       textAlign: TextAlign.end,
-//                                         color: isHighlighted?Color(0xff101828):selectedTheme ==0?Color(0xff364153):selectedTheme ==1?Color(0xff364153):Colors.white
-//
-//
-//                                     ),
-//
-//
-//                                   ],
-//                                 ),
-//                               ),
-//                             ),
-//                           ],
-//                         ),
-//                       );
-//                     },
-//                   ),
-//                 ),
-//               ],
-//             ),
-//
-//             /// 🔻 Bottom Player (UNCHANGED LOGIC)
-//             if (bottomPlayer.visible)
-//               Positioned(
-//                 bottom: 50,
-//                 left: 16,
-//                 right: 16,
-//                 child: Container(
-//                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-//                   decoration: BoxDecoration(
-//                     color: const Color(0xFFD9CFB5), // beige color like design
-//                     borderRadius: BorderRadius.circular(18),
-//                     boxShadow: [
-//                       BoxShadow(
-//                         color: Colors.black.withOpacity(0.15),
-//                         blurRadius: 10,
-//                         offset: const Offset(0, 4),
-//                       ),
-//                     ],
-//                   ),
-//                   child: Row(
-//                     children: [
-//                       /// ▶️ Play Button
-//                       Consumer(
-//                         builder: (context, ref, _) {
-//                           final playingAsync = ref.watch(playingStreamProvider);
-//                           final isPlaying = playingAsync.when(
-//                             data: (p) => p,
-//                             loading: () => false,
-//                             error: (_, __) => false,
-//                           );
-//
-//                           return Container(
-//                             decoration: const BoxDecoration(
-//                               shape: BoxShape.circle,
-//                               color: Color(0xFF2F3A4A), // dark circle
-//                             ),
-//                             child: IconButton(
-//                               onPressed: () async {
-//                                 final player = ref.read(audioPlayerProvider);
-//                                 if (isPlaying) {
-//                                   await player.pause();
-//                                 } else {
-//                                   await player.play();
-//                                 }
-//                               },
-//                               icon: Icon(
-//                                 isPlaying ? Icons.pause : Icons.play_arrow,
-//                                 color: Colors.white,
-//                               ),
-//                             ),
-//                           );
-//                         },
-//                       ),
-//
-//                       const SizedBox(width: 12),
-//
-//                       /// 🎵 Title + Subtitle
-//                       Expanded(
-//                         child: Column(
-//                           crossAxisAlignment: CrossAxisAlignment.start,
-//                           mainAxisAlignment: MainAxisAlignment.center,
-//                           children: [
-//                             Text(
-//                               bottomPlayer.reciterName ?? "Saad Al-Hamdi",
-//                               maxLines: 2,
-//                               overflow: TextOverflow.ellipsis,
-//                               style: const TextStyle(
-//                                 fontWeight: FontWeight.w600,
-//                                 fontSize: 14,
-//                                 color: Color(0xFF2F3A4A),
-//                               ),
-//                             ),
-//                           ],
-//                         ),
-//                       ),
-//
-//                       const SizedBox(width: 8),
-//
-//                       /// ⚡ Speed Chip (1.5x)
-//                       Container(
-//                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-//                         decoration: BoxDecoration(
-//                           color: Colors.white.withOpacity(0.7),
-//                           borderRadius: BorderRadius.circular(20),
-//                         ),
-//                         child: const Text(
-//                           "1.5x",
-//                           style: TextStyle(
-//                             fontWeight: FontWeight.w500,
-//                             fontSize: 12,
-//                             color: Color(0xFF2F3A4A),
-//                           ),
-//                         ),
-//                       ),
-//
-//                       const SizedBox(width: 10),
-//
-//                       /// ⏮ Previous
-//                       IconButton(
-//                         onPressed: () {
-//                           // TODO: previous
-//                         },
-//                         icon: const Icon(
-//                           Icons.skip_previous,
-//                           color: Color(0xFF2F3A4A),
-//                         ),
-//                       ),
-//
-//                       /// ⏭ Next
-//                       IconButton(
-//                         onPressed: () {
-//                           // TODO: next
-//                         },
-//                         icon: const Icon(
-//                           Icons.skip_next,
-//                           color: Color(0xFF2F3A4A),
-//                         ),
-//                       ),
-//                     ],
-//                   ),
-//                 ),
-//               )
-//           ],
-//         ),
-//       ),
-//     );
-//   }
-//
-//   Widget _ayahBottomSheet(int index, Ayah ayah) {
-//     return Consumer(
-//       builder: (context, ref, _) {
-//         final playingAsync = ref.watch(playingStreamProvider);
-//         final isPlaying = playingAsync.when(
-//           data: (playing) => playing,
-//           loading: () => false,
-//           error: (_, __) => false,
-//         );
-//         final bookmarks = ref.watch(bookmarksProvider);
-//         final currentReciter = ref.watch(currentReciterProvider);
-//
-//         return Padding(
-//           padding: const EdgeInsets.all(16),
-//           child: Column(
-//             mainAxisSize: MainAxisSize.min,
-//             crossAxisAlignment: CrossAxisAlignment.start,
-//             children: [
-//               // Ayah Text
-//               Text(
-//                 ayah.arabic,
-//                 style: const TextStyle(
-//                   fontSize: 20,
-//                   fontWeight: FontWeight.bold,
-//                 ),
-//               ),
-//               const SizedBox(height: 6),
-//               Text(ayah.english),
-//
-//               const SizedBox(height: 20),
-//
-//               /// -------- DOWNLOAD / PLAY BUTTON --------
-//               FutureBuilder<File>(
-//                 future: currentReciter != null
-//                     ? _getLocalFile(currentReciter)
-//                     : null,
-//                 builder: (context, snapshot) {
-//                   if (!snapshot.hasData) return const SizedBox();
-//
-//                   final file = snapshot.data!;
-//                   final isDownloaded = file.existsSync();
-//
-//                   return SizedBox(
-//                     width: double.infinity,
-//                     child: ElevatedButton.icon(
-//                       style: ElevatedButton.styleFrom(
-//                         padding: const EdgeInsets.symmetric(vertical: 14),
-//                         backgroundColor: isDownloaded
-//                             ? Colors.green
-//                             : Colors.blue,
-//                         shape: RoundedRectangleBorder(
-//                           borderRadius: BorderRadius.circular(10),
-//                         ),
-//                       ),
-//                       onPressed: () async {
-//                         if (currentReciter == null) return;
-//
-//                         // ---------------- DOWNLOAD ----------------
-//                         if (!isDownloaded) {
-//                           try {
-//                             ScaffoldMessenger.of(context).showSnackBar(
-//                               const SnackBar(content: Text('Downloading...')),
-//                             );
-//
-//                             await Dio().download(currentReciter, file.path);
-//
-//                             ScaffoldMessenger.of(context).showSnackBar(
-//                               const SnackBar(
-//                                 content: Text('Download complete'),
-//                               ),
-//                             );
-//
-//                             setState(() {});
-//                           } catch (e) {
-//                             ScaffoldMessenger.of(context).showSnackBar(
-//                               const SnackBar(content: Text('Download failed')),
-//                             );
-//                           }
-//                         }
-//                         // ---------------- PLAY / PAUSE ----------------
-//                         else {
-//                           final player = ref.read(audioPlayerProvider);
-//
-//                           if (isPlaying) {
-//                             await player.pause();
-//                           } else {
-//                             // Save selected reciter preference
-//                             final prefs = await SharedPreferences.getInstance();
-//                             await prefs.setString(
-//                               'saved_reciter',
-//                               currentReciter!,
-//                             );
-//
-//                             // Play from this specific ayah (pass the index)
-//                             // await player.pause();
-//                             _playAudio(file.path, currentReciter, index);
-//                             //onAyahTap( index);
-//
-//                             ref
-//                                 .read(bottomPlayerProvider.notifier)
-//                                 .setReciter(
-//                                   reciterNames[widget.surah.audioUrls.indexOf(
-//                                     currentReciter,
-//                                   )],
-//                                 );
-//
-//                             // Close modal to see the highlighting
-//                             Navigator.pop(context);
-//                           }
-//                         }
-//                       },
-//                       icon: Icon(
-//                         isDownloaded
-//                             ? (isPlaying ? Icons.pause : Icons.play_arrow)
-//                             : Icons.download,
-//                       ),
-//                       label: Text(
-//                         isDownloaded
-//                             ? (isPlaying ? "Pause Audio" : "Play Audio")
-//                             : "Download Audio",
-//                       ),
-//                     ),
-//                   );
-//                 },
-//               ),
-//
-//               const SizedBox(height: 12),
-//
-//               /// -------- BOOKMARK BUTTON (FULL WIDTH) --------
-//               SizedBox(
-//                 width: double.infinity,
-//                 child: OutlinedButton.icon(
-//                   style: OutlinedButton.styleFrom(
-//                     padding: const EdgeInsets.symmetric(vertical: 14),
-//                     side: BorderSide(
-//                       color:
-//                           bookmarks.any(
-//                             (b) =>
-//                                 b.suraId == widget.surah.id &&
-//                                 b.ayahId == ayah.ayah,
-//                           )
-//                           ? Colors.orange
-//                           : Colors.grey,
-//                     ),
-//                     shape: RoundedRectangleBorder(
-//                       borderRadius: BorderRadius.circular(10),
-//                     ),
-//                   ),
-//                   onPressed: () {
-//                     ref
-//                         .read(bookmarksProvider.notifier)
-//                         .toggle(
-//                           widget.surah.id,
-//                           ayah.ayah,
-//                           ayah.arabic,
-//                           ayah.english,
-//                         );
-//                   },
-//                   icon: Icon(
-//                     bookmarks.any(
-//                           (b) =>
-//                               b.suraId == widget.surah.id &&
-//                               b.ayahId == ayah.ayah,
-//                         )
-//                         ? Icons.bookmark
-//                         : Icons.bookmark_border,
-//                     color:
-//                         bookmarks.any(
-//                           (b) =>
-//                               b.suraId == widget.surah.id &&
-//                               b.ayahId == ayah.ayah,
-//                         )
-//                         ? Colors.orange
-//                         : Colors.grey,
-//                   ),
-//                   label: Text(
-//                     bookmarks.any(
-//                           (b) =>
-//                               b.suraId == widget.surah.id &&
-//                               b.ayahId == ayah.ayah,
-//                         )
-//                         ? "Remove Bookmark"
-//                         : "Add Bookmark",
-//                     style: TextStyle(
-//                       color:
-//                           bookmarks.any(
-//                             (b) =>
-//                                 b.suraId == widget.surah.id &&
-//                                 b.ayahId == ayah.ayah,
-//                           )
-//                           ? Colors.orange
-//                           : Colors.grey,
-//                       fontWeight: FontWeight.bold,
-//                     ),
-//                   ),
-//                 ),
-//               ),
-//
-//               const SizedBox(height: 10),
-//             ],
-//           ),
-//         );
-//       },
-//     );
-//   }
-//   String toArabicNumber(int number) {
-//     const arabicDigits = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
-//     return number
-//         .toString()
-//         .split('')
-//         .map((e) => arabicDigits[int.parse(e)])
-//         .join();
-//   }
-//
-//   void showSettingsBottomSheet(
-//       BuildContext context, {
-//         required List<String> audioUrls,
-//         required List<String> reciterNames,
-//         required Future<void> Function(String url, String name) downloadAndPlay,
-//         required Future<File> Function(String url) getLocalFile,
-//         required Function(String path, String url) playAudio,
-//       }) {
-//     showModalBottomSheet(
-//       context: context,
-//       isScrollControlled: true,
-//       backgroundColor: Colors.transparent,
-//
-//       /// ✅ Important for full height + keyboard
-//       builder: (_) => DraggableScrollableSheet(
-//         expand: false,
-//         initialChildSize: 0.9,
-//         maxChildSize: 0.95,
-//         minChildSize: 0.6,
-//
-//         builder: (context, scrollController) {
-//           return SingleChildScrollView(
-//             controller: scrollController,
-//             child: SettingsBottomSheet(
-//               audioUrls: audioUrls,
-//               reciterNames: reciterNames,
-//               downloadAndPlay: downloadAndPlay,
-//               getLocalFile: getLocalFile,
-//               playAudio: playAudio,
-//             ),
-//           );
-//         },
-//       ),
-//     );
-//   }
-// }
-
-// ONLY showing the UPDATED SurahDetailScreen (rest of your providers/models stay same)
 
 class SurahDetailScreen extends ConsumerStatefulWidget {
   final Surah surah;
@@ -1305,21 +303,24 @@ class SurahDetailScreen extends ConsumerStatefulWidget {
   });
 
   @override
-  ConsumerState<SurahDetailScreen> createState() =>
-      _SurahDetailScreenState();
+  ConsumerState<SurahDetailScreen> createState() => _SurahDetailScreenState();
 }
 
-class _SurahDetailScreenState
-    extends ConsumerState<SurahDetailScreen> {
+class _SurahDetailScreenState extends ConsumerState<SurahDetailScreen> {
+  final ScrollController _scrollController = ScrollController();
+  final Map<int, GlobalKey> _itemKeys = {};
+  int? _lastScrolledIndex;
 
-  /// ================= PAGE VIEW =================
-  final PageController _pageController = PageController();
-  int _currentPage = 0;
-  late List<List<Ayah>> _pages;
+  StreamSubscription<Duration>? _positionStreamSubscription;
+  StreamSubscription<PlayerState>? _playerStateSubscription;
+  // 🔥 FIX: _playingStreamSubscription REMOVED — resume-এ wrong re-evaluation বন্ধ করতে
 
-  /// ================= AUDIO =================
-  dynamic _positionStreamSubscription;
   int _lastIncrementedSecond = -1;
+  bool _localIsPlaying = false;
+  double _audioDuration = 0;
+  int? _currentSurahId;
+
+  bool _isProcessingPosition = false;
 
   final List<String> reciterNames = [
     "Abdulbasit Abdulsamad",
@@ -1328,366 +329,593 @@ class _SurahDetailScreenState
     "Ali Hajjaj Alsouasi",
   ];
 
-  /// ================= INIT =================
-  @override
-  void initState() {
-    super.initState();
+  /// ================= RESET STATE FOR NEW SURAH =================
+  void _resetSurahState() {
+    _positionStreamSubscription?.cancel();
+    _playerStateSubscription?.cancel();
+    _lastIncrementedSecond = -1;
+    _audioDuration = 0;
+    _lastScrolledIndex = null;
+    _isProcessingPosition = false;
+    ref.read(highlightedAyahProvider.notifier).state = -1;
 
-    _pages = _paginateAyahs(widget.surah.ayahs);
+    final player = ref.read(audioPlayerProvider);
+    player.stop();
+    player.seek(Duration.zero);
 
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final prefs = await SharedPreferences.getInstance();
-      final savedReciter = prefs.getString('saved_reciter');
+    ref.read(bottomPlayerProvider.notifier).hide();
+    print('Surah state reset for new surah: ${widget.surah.id}');
+  }
 
-      ref.read(currentReciterProvider.notifier).state =
-          savedReciter ?? widget.surah.audioUrls.first;
+  /// ================= AUTO-PLAY NEXT SURAH =================
+  Future<void> _autoPlayNextSurah() async {
+    try {
+      if (widget.surahIndex < widget.allSurahs.length - 1) {
+        final nextSurah = widget.allSurahs[widget.surahIndex + 1];
+        final reciterUrl = ref.read(currentReciterProvider);
+        if (reciterUrl != null) {
+          final file = await _getLocalFile(reciterUrl);
+          if (await file.exists()) {
+            print('Auto-playing next surah: ${nextSurah.name}');
+            _resetSurahState();
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => SurahDetailScreen(
+                  surah: nextSurah,
+                  allSurahs: widget.allSurahs,
+                  surahIndex: widget.surahIndex + 1,
+                ),
+              ),
+            );
+            await Future.delayed(const Duration(milliseconds: 500));
+          } else {
+            print('Next surah audio not downloaded');
+          }
+        }
+      } else {
+        print('No more surahs to play');
+      }
+    } catch (e) {
+      print('Error auto-playing next surah: $e');
+    }
+  }
+
+  /// ================= FILE HANDLING =================
+  Future<File> _getLocalFile(String url) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final bytes = utf8.encode(url);
+    final filename = "${sha1.convert(bytes)}.mp3";
+    return File('${dir.path}/$filename');
+  }
+
+  Future<Map<String, bool>> _checkDownloadedStatus() async {
+    final map = <String, bool>{};
+    for (String url in widget.surah.audioUrls) {
+      final file = await _getLocalFile(url);
+      map[url] = await file.exists();
+    }
+    return map;
+  }
+
+  Future<void> _downloadAndPlay(String url, String reciterName) async {
+    final file = await _getLocalFile(url);
+    try {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Downloading...')));
+      await Dio().download(url, file.path);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Downloaded $reciterName')));
+      _playAudio(file.path, url);
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Download failed')));
+    }
+  }
+
+  /// ================= AYAH TAP HANDLER =================
+  void onAyahTap(int index) async {
+    final player = ref.read(audioPlayerProvider);
+    final reciterUrl = ref.read(currentReciterProvider);
+    if (reciterUrl == null) return;
+    final reciterIndex = widget.surah.audioUrls.indexOf(reciterUrl);
+    if (reciterIndex == -1) return;
+    final ayah = widget.surah.ayahs[index];
+    final startTime = AyahSelector.getStartTime(ayah, reciterIndex);
+    if (startTime == null) return;
+
+    final wasPlaying = player.playing;
+    await player.seek(Duration(milliseconds: (startTime * 1000).toInt()));
+
+    // Immediately update highlight when tapping
+    ref.read(highlightedAyahProvider.notifier).state = index;
+    _scrollToCurrentAyah(index);
+
+    if (wasPlaying) {
+      await player.play();
+    }
+  }
+
+  /// ================= PLAY AUDIO FROM SPECIFIC AYAH =================
+  Future<void> _playAudioFromAyah(
+      String path,
+      String reciterUrl,
+      int startingAyahIndex,
+      ) async {
+    try {
+      await _positionStreamSubscription?.cancel();
+      await _playerStateSubscription?.cancel();
+
+      _lastIncrementedSecond = -1;
+      _audioDuration = 0;
+      _isProcessingPosition = false;
+
+      final player = ref.read(audioPlayerProvider);
+      try {
+        if (player.playing) await player.stop();
+      } catch (e) {
+        print('Error stopping player: $e');
+      }
+
+      final reciterIndex = widget.surah.audioUrls.indexOf(reciterUrl);
+      if (reciterIndex == -1) return;
+
+      final playbackSpeed = ref.read(playbackSpeedProvider);
+      await player.setSpeed(playbackSpeed);
+
+      // Highlight starting ayah immediately
+      ref.read(highlightedAyahProvider.notifier).state = startingAyahIndex;
+      _scrollToCurrentAyah(startingAyahIndex);
+      ref.read(bottomPlayerProvider.notifier).show(reciterNames[reciterIndex]);
+      ref.read(currentReciterProvider.notifier).state = reciterUrl;
+
+      final file = File(path);
+      if (!await file.exists()) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Audio file not found')));
+        return;
+      }
+
+      await player.setFilePath(path);
+
+      final duration = await player.duration;
+      if (duration != null) _audioDuration = duration.inMilliseconds / 1000.0;
+
+      final startingAyah = widget.surah.ayahs[startingAyahIndex];
+      final startTime = AyahSelector.getStartTime(startingAyah, reciterIndex);
+      if (startTime != null) {
+        await player.seek(Duration(milliseconds: (startTime * 1000).toInt()));
+      }
+
+      await player.play();
+      print(
+        'Audio playback started from ayah $startingAyahIndex at ${playbackSpeed}x speed',
+      );
+
+      // Listen to player state changes (completion detection)
+      _playerStateSubscription = player.playerStateStream.listen((playerState) {
+        if (playerState.processingState == ProcessingState.completed) {
+          print('Current surah audio finished, auto-playing next...');
+          _autoPlayNextSurah();
+        }
+      });
+
+      // 🔥 FIX: positionStream-এ শুধু player.playing == true হলেই ayah index change হবে
+      _positionStreamSubscription = player.positionStream.listen((
+          position,
+          ) async {
+        if (_isProcessingPosition) return;
+        _isProcessingPosition = true;
+
+        try {
+          // 🔥 KEY FIX 1: Pause state-এ ayah index change হবে না
+          if (!player.playing) return;
+
+          final time = position.inMilliseconds / 1000.0;
+          final currentSecond = time.floor();
+
+          final currentReciterUrl = ref.read(currentReciterProvider);
+          if (currentReciterUrl == null) return;
+          final currentReciterIndex = widget.surah.audioUrls.indexOf(
+            currentReciterUrl,
+          );
+          if (currentReciterIndex == -1) return;
+
+          // Find matching ayah using helper with tolerance
+          final matchedIndex = AyahSelector.findByTime(
+            widget.surah.ayahs,
+            time,
+            currentReciterIndex,
+            _audioDuration,
+          );
+
+          // 🔥 KEY FIX 2: শুধু playing state-এ highlight update হবে
+          final currentHighlight = ref.read(highlightedAyahProvider);
+          if (matchedIndex != null && currentHighlight != matchedIndex) {
+            ref.read(highlightedAyahProvider.notifier).state = matchedIndex;
+            _scrollToCurrentAyah(matchedIndex);
+            print(
+              'Auto-highlighted ayah $matchedIndex at ${time.toStringAsFixed(2)}s',
+            );
+          }
+
+          // Track listening progress (once per second, only when playing)
+          if (currentSecond != _lastIncrementedSecond) {
+            _lastIncrementedSecond = currentSecond;
+            await ref.read(dailyProgressProvider.notifier).incrementListening();
+          }
+        } finally {
+          await Future.delayed(const Duration(milliseconds: 50));
+          _isProcessingPosition = false;
+        }
+      });
+    } catch (e) {
+      print('Error in _playAudioFromAyah: $e');
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Playback error: $e')));
+    }
+  }
+
+  void _playAudio(
+      String path, [
+        String? reciterUrl,
+        int? startingAyahIndex,
+      ]) async {
+    final startIndex = startingAyahIndex ?? 0;
+    if (reciterUrl != null) {
+      await _playAudioFromAyah(path, reciterUrl, startIndex);
+    }
+  }
+
+  void _scrollToCurrentAyah(int index) {
+    if (_lastScrolledIndex == index) return;
+    _lastScrolledIndex = index;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      try {
+        final key = _itemKeys[index];
+        if (key == null) return;
+        final context = key.currentContext;
+        if (context != null && context.mounted) {
+          Scrollable.ensureVisible(
+            context,
+            alignment: 0.35,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+          );
+        }
+      } catch (e) {
+        print('Scroll error: $e');
+      }
     });
   }
 
-  /// ================= PAGINATION =================
-  List<List<Ayah>> _paginateAyahs(List<Ayah> ayahs) {
-    List<List<Ayah>> pages = [];
-    List<Ayah> current = [];
-    int count = 0;
-
-    for (var a in ayahs) {
-      count += a.arabic.length;
-
-      if (count > 900) {
-        pages.add(current);
-        current = [];
-        count = a.arabic.length;
-      }
-      current.add(a);
-    }
-
-    if (current.isNotEmpty) pages.add(current);
-    return pages;
-  }
-
-  /// ================= PAGE JUMP =================
-  void _jumpToPage(int ayahIndex) {
-    for (int i = 0; i < _pages.length; i++) {
-      if (_pages[i]
-          .any((a) => widget.surah.ayahs.indexOf(a) == ayahIndex)) {
-        _pageController.animateToPage(
-          i,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeInOut,
-        );
-        break;
+  Future<void> navigateToAyahById(int targetAyahId) async {
+    final ayahIndex = AyahSelector.findById(widget.surah.ayahs, targetAyahId);
+    if (ayahIndex != -1) {
+      ref.read(highlightedAyahProvider.notifier).state = ayahIndex!;
+      _scrollToCurrentAyah(ayahIndex!);
+      final player = ref.read(audioPlayerProvider);
+      final reciterUrl = ref.read(currentReciterProvider);
+      if (reciterUrl != null) {
+        final ayah = widget.surah.ayahs[ayahIndex];
+        final reciterIndex = widget.surah.audioUrls.indexOf(reciterUrl);
+        final startTime = AyahSelector.getStartTime(ayah, reciterIndex);
+        if (startTime != null) {
+          await player.seek(Duration(milliseconds: (startTime * 1000).toInt()));
+        }
       }
     }
   }
 
-  /// ================= AUDIO PLAY =================
-  void _playAudio(String path, String url, [int startIndex = 0]) async {
-    final player = ref.read(audioPlayerProvider);
-
-    await _positionStreamSubscription?.cancel();
-    _lastIncrementedSecond = -1;
-
-    await player.setFilePath(path);
-    await player.play();
-
-    _positionStreamSubscription =
-        player.positionStream.listen((position) async {
-          final time = position.inMilliseconds / 1000;
-
-          final reciterUrl = ref.read(currentReciterProvider);
-          if (reciterUrl == null) return;
-
-          final reciterIndex =
-          widget.surah.audioUrls.indexOf(reciterUrl);
-
-          int matchedIndex = -1;
-
-          for (int i = 0; i < widget.surah.ayahs.length; i++) {
-            final ayah = widget.surah.ayahs[i];
-
-            if (ayah.timings.length <= reciterIndex) continue;
-            if (ayah.timings[reciterIndex].length < 2) continue;
-
-            final start = ayah.timings[reciterIndex][0];
-            final end = ayah.timings[reciterIndex][1];
-
-            if (time >= start && time <= end) {
-              matchedIndex = i;
-              break;
-            }
-          }
-
-          if (matchedIndex != -1) {
-            ref
-                .read(highlightedAyahProvider.notifier)
-                .state = matchedIndex;
-
-            /// 🔥 AUTO PAGE MOVE
-            _jumpToPage(matchedIndex);
-          }
-
-          final currentSecond = time.floor();
-          if (currentSecond != _lastIncrementedSecond) {
-            _lastIncrementedSecond = currentSecond;
-            await ref
-                .read(dailyProgressProvider.notifier)
-                .incrementListening();
-          }
-        });
+  @override
+  void dispose() {
+    _positionStreamSubscription?.cancel();
+    _playerStateSubscription?.cancel();
+    _scrollController.dispose();
+    super.dispose();
   }
 
-  /// ================= UI =================
+  @override
+  void initState() {
+    super.initState();
+    _currentSurahId = widget.surah.id;
+    if (widget.surah.audioUrls.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          final savedReciterUrl = prefs.getString('saved_reciter');
+          final firstUrl = savedReciterUrl ?? widget.surah.audioUrls.first;
+          if (!widget.surah.audioUrls.contains(firstUrl)) {
+            ref.read(currentReciterProvider.notifier).state =
+                widget.surah.audioUrls.first;
+          } else {
+            ref.read(currentReciterProvider.notifier).state = firstUrl;
+          }
+        } catch (e) {
+          print('Error in initState: $e');
+        }
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant SurahDetailScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.surah.id != widget.surah.id) {
+      print('Surah changed from ${oldWidget.surah.id} to ${widget.surah.id}');
+      _currentSurahId = widget.surah.id;
+      _resetSurahState();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final bottomPlayer = ref.watch(bottomPlayerProvider);
     final dailyProgress = ref.watch(dailyProgressProvider);
-    final selectedTheme =
-    ref.watch(settingsProvider.select((s) => s.selectedTheme));
+    final highlightedIndex = ref.watch(highlightedAyahProvider);
+    final bookmarks = ref.watch(bookmarksProvider);
+    final bottomPlayer = ref.watch(bottomPlayerProvider);
+    final playbackSpeed = ref.watch(playbackSpeedProvider);
+    final selectedTheme = ref.watch(
+      settingsProvider.select((s) => s.selectedTheme),
+    );
+
+    final goalSeconds = dailyProgress.goalMinutes * 60;
+    final progress = (dailyProgress.listenedSeconds / goalSeconds).clamp(
+      0.0,
+      1.0,
+    );
 
     return Scaffold(
-      backgroundColor: selectedTheme == 2
-          ? const Color(0xff101828)
-          : Colors.white,
-
-      body: Stack(
-        children: [
-
-          /// 📖 FULL PAGE VIEW
-          PageView.builder(
-            controller: _pageController,
-            itemCount: _pages.length,
-            onPageChanged: (i) => setState(() => _currentPage = i),
-            itemBuilder: (_, i) => _buildPage(i),
-          ),
-
-          /// 🔝 HEADER
-          Column(
-            children: [
-                              Padding(
-                padding:  EdgeInsets.only(left: 10,right: 16,top: 40,),
-                child: Row(
-                  children: [
-                    GestureDetector(
-                      onTap: () => Navigator.pop(context),
-                      child:  Icon(Icons.arrow_back, color: selectedTheme ==0?Colors.black:selectedTheme ==1?Colors.black:Colors.white,),
-                    ),
-                    const SizedBox(width: 10),
-
-                    Expanded(
-                      child: Text(
-                        widget.surah.name,
-                        style:  TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                           color: selectedTheme ==0?Colors.black:selectedTheme ==1?Colors.black:Colors.white,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-
-                    // IconButton(
-                    //   icon: const Icon(Icons.bar_chart,size: ,),
-                    //   onPressed: () => Navigator.push(
-                    //     context,
-                    //     MaterialPageRoute(
-                    //       builder: (_) => const WeeklyReportScreen(),
-                    //     ),
-                    //   ),
-                    // ),
-                    GestureDetector(
-                      onTap: (){
-                        // showSettingsBottomSheet( context,audioUrls: widget.surah.audioUrls,
-                        //   reciterNames: reciterNames,
-                        //   downloadAndPlay: _downloadAndPlay,
-                        //   getLocalFile: _getLocalFile,
-                        //   playAudio: _playAudio,);
-
-                      },
-                        child: Icon(Icons.settings,color: selectedTheme ==0?Colors.black:selectedTheme ==1?Colors.black:Colors.white,)),
-
-
-                  ],
-                ),
-              ),
-
-              /// 🔹 PROGRESS
-              Padding(
-                padding: EdgeInsets.only(left: 12,right: 12),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    Text(
-                      "Reading Goal: ${(dailyProgress.listenedSeconds / 60).floor()} / ${dailyProgress.goalMinutes} min",
-                      style: TextStyle(fontWeight: FontWeight.bold,color: selectedTheme ==0?Colors.black:selectedTheme ==1?Colors.black:Colors.white,),
-                    ),
-                    const SizedBox(width: 8),
-                    SizedBox(
-                      height: 16,
-                      width: 16,
-                      child: CircularProgressIndicator(
-                        value: 2,
-                        strokeWidth: 4,
-                        backgroundColor:selectedTheme ==0?Colors.grey.withOpacity(0.25):Colors.white,
-                        valueColor: const AlwaysStoppedAnimation<Color>(
-                          Color(0xFF00BCDD),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    GestureDetector(
-                      onTap: (){
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const WeeklyReportScreen(),
-                          ),
-                        );
-                      },
-                        child: Icon(Icons.arrow_forward_ios_rounded,size: 16,)),
-                  ],
-                ),
-              ),
-              SizedBox(height: 48),
-               Text(widget.surah.arName,style: TextStyle(fontSize: 24,fontWeight: FontWeight.w600),),
-              SizedBox(height: 32),
-            ],
-          ),
-
-          /// 📊 PAGE + GOAL
-          Positioned(
-            bottom: bottomPlayer.visible ? 120 : 40,
-            left: 16,
-            child: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.6),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Text(
-                "Page ${_currentPage + 1}/${_pages.length}\n"
-                    "${(dailyProgress.listenedSeconds / 60).floor()} / ${dailyProgress.goalMinutes} min",
-                style: const TextStyle(color: Colors.white),
-              ),
+      backgroundColor: selectedTheme == 0
+          ? Colors.white
+          : selectedTheme == 1
+          ? Color(0xffF5F1E8)
+          : Color(0xff101828),
+      body: Container(
+        decoration: BoxDecoration(
+          image: DecorationImage(
+            image: AssetImage(
+              selectedTheme == 0
+                  ? "assets/image/white_quran_back_ground.png"
+                  : selectedTheme == 1
+                  ? "assets/image/paper_theme.png"
+                  : "assets/image/black_theme.png",
             ),
+            fit: BoxFit.fitHeight,
           ),
-
-          /// 🔻 PLAYER
-          if (bottomPlayer.visible)
-            Positioned(
-                bottom: 50,
-                left: 16,
-                right: 16,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFD9CFB5), // beige color like design
-                    borderRadius: BorderRadius.circular(18),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.15),
-                        blurRadius: 10,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                  ),
+        ),
+        child: Stack(
+          children: [
+            Column(
+              children: [
+                /// 🔹 HEADER
+                Padding(
+                  padding: EdgeInsets.only(left: 10, right: 16, top: 30),
                   child: Row(
                     children: [
-                      /// ▶️ Play Button
-                      Consumer(
-                        builder: (context, ref, _) {
-                          final playingAsync = ref.watch(playingStreamProvider);
-                          final isPlaying = playingAsync.when(
-                            data: (p) => p,
-                            loading: () => false,
-                            error: (_, __) => false,
-                          );
-
-                          return Container(
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: Color(0xFF2F3A4A), // dark circle
-                            ),
-                            child: IconButton(
-                              onPressed: () async {
-                                final player = ref.read(audioPlayerProvider);
-                                if (isPlaying) {
-                                  await player.pause();
-                                } else {
-                                  await player.play();
-                                }
-                              },
-                              icon: Icon(
-                                isPlaying ? Icons.pause : Icons.play_arrow,
-                                color: Colors.white,
-                              ),
-                            ),
+                      GestureDetector(
+                        onTap: () => Navigator.pop(context),
+                        child: Icon(
+                          Icons.arrow_back,
+                          color: selectedTheme == 0
+                              ? Colors.black
+                              : selectedTheme == 1
+                              ? Colors.black
+                              : Colors.white,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          widget.surah.name,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: selectedTheme == 0
+                                ? Colors.black
+                                : selectedTheme == 1
+                                ? Colors.black
+                                : Colors.white,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          Icons.settings,
+                          color: selectedTheme == 0
+                              ? Colors.black
+                              : selectedTheme == 1
+                              ? Colors.black
+                              : Colors.white,
+                        ),
+                        onPressed: () async {
+                          showSettingsBottomSheet(
+                            context,
+                            audioUrls: widget.surah.audioUrls,
+                            reciterNames: reciterNames,
+                            downloadAndPlay: _downloadAndPlay,
+                            getLocalFile: _getLocalFile,
+                            playAudio: _playAudio,
                           );
                         },
                       ),
-
-                      const SizedBox(width: 12),
                     ],
                   ),
-                ))
-
-         ],
-      ),
-     );
-  }
-
-  /// ================= PAGE =================
-  Widget _buildPage(int index) {
-    final pageAyahs = _pages[index];
-    final highlighted = ref.watch(highlightedAyahProvider);
-    final theme =
-    ref.watch(settingsProvider.select((s) => s.selectedTheme));
-
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 200, 20, 80),
-      decoration: BoxDecoration(
-        image: DecorationImage(
-          image: AssetImage(
-            theme == 0
-                ? "assets/image/white_quran_back_ground.png"
-                : theme == 1
-                ? "assets/image/paper_theme.png"
-                : "assets/image/black_theme.png",
-          ),
-          fit: BoxFit.cover,
-        ),
-      ),
-      child: RichText(
-        textDirection: TextDirection.rtl,
-        textAlign: TextAlign.justify,
-        text: TextSpan(
-          children: pageAyahs.map((a) {
-            final i = widget.surah.ayahs.indexOf(a);
-            final isH = i == highlighted;
-            final id = a.ayah;
-
-            return TextSpan(children: [
-              TextSpan(
-                text: "${a.arabic} ",
-                style: TextStyle(
-                  fontSize: isH ? 34 : 32,
-                  height: 1.8,
-                  fontWeight:
-                  isH ? FontWeight.bold : FontWeight.normal,
-                  color: isH
-                      ? const Color(0xff2F7D33)
-                      : (theme == 2
-                      ? Colors.white
-                      : Colors.black),
                 ),
-              ),
-              WidgetSpan(child:        Stack(
+
+                /// 🔹 PROGRESS
+                Padding(
+                  padding: EdgeInsets.only(left: 12, right: 12),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Text(
+                        "Reading Goal: ${(dailyProgress.listenedSeconds / 60).floor()} / ${dailyProgress.goalMinutes} min",
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: selectedTheme == 0
+                              ? Colors.black
+                              : selectedTheme == 1
+                              ? Colors.black
+                              : Colors.white,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        height: 16,
+                        width: 16,
+                        child: CircularProgressIndicator(
+                          value: progress,
+                          strokeWidth: 4,
+                          backgroundColor: selectedTheme == 0
+                              ? Colors.grey.withOpacity(0.25)
+                              : Colors.white,
+                          valueColor: const AlwaysStoppedAnimation<Color>(
+                            Color(0xFF00BCDD),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      GestureDetector(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const WeeklyReportScreen(),
+                            ),
+                          );
+                        },
+                        child: Icon(Icons.arrow_forward_ios_rounded, size: 16),
+                      ),
+                    ],
+                  ),
+                ),
+                SizedBox(height: 48),
+                Text(
+                  widget.surah.arName,
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
+                ),
+                SizedBox(height: 32),
+
+                /// 🔹 LIST
+                SizedBox(
+                  height: 580,
+                  child: ListView.builder(
+                    padding: EdgeInsets.zero,
+                    controller: _scrollController,
+                    itemCount: widget.surah.ayahs.length,
+                    key: Key('ayah_list_${widget.surah.id}'),
+                    itemBuilder: (context, index) {
+                      final ayah = widget.surah.ayahs[index];
+                      _itemKeys[index] = _itemKeys[index] ?? GlobalKey();
+                      final isHighlighted = highlightedIndex == index;
+                      final id = ayah.ayah;
+
+                      return Padding(
+                        padding: EdgeInsets.only(left: 20, right: 20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(height: 10),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Padding(
+                                  padding: EdgeInsets.only(left: 20),
+                                  child: Row(
+                                    children: [
+                                      CustomText(
+                                        text: "Aya 1 : ${index + 1}",
+                                        color: selectedTheme == 0
+                                            ? Color(0xff364153)
+                                            : selectedTheme == 1
+                                            ? Color(0xff364153)
+                                            : Colors.white,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                      Icon(
+                                        Icons.keyboard_arrow_down_rounded,
+                                        size: 18,
+                                        color: selectedTheme == 0
+                                            ? Color(0xff364153)
+                                            : selectedTheme == 1
+                                            ? Color(0xff364153)
+                                            : Colors.white,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                if (bookmarks.any(
+                                      (b) =>
+                                  b.suraId == widget.surah.id &&
+                                      b.ayahId == ayah.ayah,
+                                ))
+                                  Padding(
+                                    padding: EdgeInsets.only(right: 20),
+                                    child: const Icon(
+                                      Icons.bookmark,
+                                      color: Colors.orange,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            SizedBox(height: 10),
+                            GestureDetector(
+                              onTap: () async {
+                                await showModalBottomSheet(
+                                  context: context,
+                                  builder: (_) => _ayahBottomSheet(index, ayah),
+                                );
+                              },
+                              child: Container(
+                                width: double.infinity,
+                                key: _itemKeys[index],
+                                margin: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 6,
+                                ),
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: isHighlighted
+                                      ? Color(0xffC8E6C9)
+                                      : selectedTheme == 0
+                                      ? Colors.white
+                                      : selectedTheme == 1
+                                      ? Color(0xffF5F1E8)
+                                      : Color(0xff101828),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: isHighlighted
+                                        ? Color(0xffC8E6C9)
+                                        : selectedTheme == 0
+                                        ? Colors.white
+                                        : selectedTheme == 1
+                                        ? Color(0xffF5F1E8)
+                                        : Color(0xff101828),
+                                    width: isHighlighted ? 2 : 1,
+                                  ),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Stack(
                                       children: [
                                         SizedBox(
                                           height: 35,
                                           width: 35,
                                           child: SvgPicture.asset(
                                             "assets/icon/sura_icon_1.svg",
-                                            colorFilter: ColorFilter.mode(Color(0xff2F7D33), BlendMode.srcIn),
+                                            colorFilter: ColorFilter.mode(
+                                              Color(0xff2F7D33),
+                                              BlendMode.srcIn,
+                                            ),
                                           ),
                                         ),
                                         Positioned(
@@ -1705,56 +933,432 @@ class _SurahDetailScreenState
                                                 ? 12
                                                 : 10,
                                             fontWeight: FontWeight.w600,
-                                              color: Color(0xff2F7D33)
+                                            color: Color(0xff2F7D33),
                                           ),
                                         ),
                                       ],
-                                    ),),
-              TextSpan(text: " ", style: TextStyle(fontSize: isH ? 34 : 32, height: 1.8)),
-              // WidgetSpan(
-              //   child: GestureDetector(
-              //     onTap: () => _onAyahTap(i),
-              //     child: Container(
-              //       margin: const EdgeInsets.symmetric(horizontal: 4),
-              //       padding: const EdgeInsets.all(6),
-              //       decoration: BoxDecoration(
-              //         shape: BoxShape.circle,
-              //         border: Border.all(color: Colors.grey),
-              //       ),
-              //       child: Text(toArabicNumber(a.ayah)),
-              //     ),
-              //   ),
-              // ),
-            ]);
-          }).toList(),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    CustomText(
+                                      text: ayah.arabic,
+                                      fontWeight: isHighlighted
+                                          ? FontWeight.bold
+                                          : FontWeight.normal,
+                                      fontSize: isHighlighted ? 26 : 24,
+                                      textAlign: TextAlign.end,
+                                      color: isHighlighted
+                                          ? Color(0xff101828)
+                                          : selectedTheme == 0
+                                          ? Color(0xff364153)
+                                          : selectedTheme == 1
+                                          ? Color(0xff364153)
+                                          : Colors.white,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+
+            /// 🔻 Bottom Player
+            if (bottomPlayer.visible)
+              Positioned(
+                bottom: 50,
+                left: 16,
+                right: 16,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFD9CFB5),
+                    borderRadius: BorderRadius.circular(18),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.15),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      /// ▶️ Play / Pause Button
+                      Consumer(
+                        builder: (context, ref, _) {
+                          final playingAsync = ref.watch(playingStreamProvider);
+                          final isPlaying = playingAsync.when(
+                            data: (p) => p,
+                            loading: () => false,
+                            error: (_, __) => false,
+                          );
+
+                          return Container(
+                            decoration: const BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Color(0xFF2F3A4A),
+                            ),
+                            child: IconButton(
+                              onPressed: () async {
+                                final player = ref.read(audioPlayerProvider);
+
+                                if (isPlaying) {
+                                  await player.pause();
+                                } else {
+                                  // 🔥 FIX 3: Resume-এ speed set করি, কিন্তু
+                                  // _reevaluateCurrentAyah CALL করি না।
+                                  // positionStream নিজেই সঠিক ayah detect করবে
+                                  // যখন player.playing == true হবে।
+                                  final speed = ref.read(playbackSpeedProvider);
+                                  await player.setSpeed(speed);
+                                  await player.play();
+                                }
+                              },
+                              icon: Icon(
+                                isPlaying ? Icons.pause : Icons.play_arrow,
+                                color: Colors.white,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+
+                      const SizedBox(width: 12),
+
+                      /// 🎵 Reciter Name
+                      Expanded(
+                        child: Text(
+                          bottomPlayer.reciterName ?? "Saad Al-Hamdi",
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                            color: Color(0xFF2F3A4A),
+                          ),
+                        ),
+                      ),
+
+                      const SizedBox(width: 8),
+
+                      /// ➖ Decrease Speed
+                      Consumer(
+                        builder: (context, ref, _) {
+                          final speed = ref.watch(playbackSpeedProvider);
+
+                          return IconButton(
+                            onPressed: () async {
+                              final player = ref.read(audioPlayerProvider);
+                              final newSpeed = (speed - 0.5).clamp(0.5, 3.0);
+                              ref.read(playbackSpeedProvider.notifier).state =
+                                  newSpeed;
+                              await player.setSpeed(newSpeed);
+                            },
+                            icon: const Icon(
+                              Icons.skip_previous,
+                              color: Color(0xFF2F3A4A),
+                            ),
+                          );
+                        },
+                      ),
+
+                      /// ⚡ Speed Display
+                      Consumer(
+                        builder: (context, ref, _) {
+                          final speed = ref.watch(playbackSpeedProvider);
+
+                          return Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.7),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Text(
+                              "${speed.toStringAsFixed(1)}x",
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w500,
+                                fontSize: 12,
+                                color: Color(0xFF2F3A4A),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+
+                      /// ➕ Increase Speed
+                      Consumer(
+                        builder: (context, ref, _) {
+                          final speed = ref.watch(playbackSpeedProvider);
+
+                          return IconButton(
+                            onPressed: () async {
+                              final player = ref.read(audioPlayerProvider);
+                              final newSpeed = (speed + 0.5).clamp(0.5, 3.0);
+                              ref.read(playbackSpeedProvider.notifier).state =
+                                  newSpeed;
+                              await player.setSpeed(newSpeed);
+                            },
+                            icon: const Icon(
+                              Icons.skip_next,
+                              color: Color(0xFF2F3A4A),
+                            ),
+                          );
+                        },
+                      ),
+
+                      const SizedBox(width: 6),
+                    ],
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );
   }
 
-  /// ================= TAP =================
-  void _onAyahTap(int index) async {
-    final player = ref.read(audioPlayerProvider);
-    final url = ref.read(currentReciterProvider);
+  Widget _ayahBottomSheet(int index, Ayah ayah) {
+    return Consumer(
+      builder: (context, ref, _) {
+        final playingAsync = ref.watch(playingStreamProvider);
+        final isPlaying = playingAsync.when(
+          data: (playing) => playing,
+          loading: () => false,
+          error: (_, __) => false,
+        );
+        final bookmarks = ref.watch(bookmarksProvider);
+        final currentReciter = ref.watch(currentReciterProvider);
 
-    if (url == null) return;
+        return Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                ayah.arabic,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(ayah.english),
+              const SizedBox(height: 20),
 
-    final file = await _getLocalFile(url);
+              /// -------- DOWNLOAD / PLAY BUTTON --------
+              FutureBuilder<File>(
+                future: currentReciter != null
+                    ? _getLocalFile(currentReciter)
+                    : null,
+                builder: (context, snapshot) {
+                  if (!snapshot.hasData) return const SizedBox();
+                  final file = snapshot.data!;
+                  final isDownloaded = file.existsSync();
 
-    if (await file.exists()) {
-      _playAudio(file.path, url, index);
-    }
-  }
+                  return SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        backgroundColor: isDownloaded
+                            ? Colors.green
+                            : Colors.blue,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      onPressed: () async {
+                        if (currentReciter == null) return;
+                        if (!isDownloaded) {
+                          try {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Downloading...')),
+                            );
+                            await Dio().download(currentReciter, file.path);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Download complete'),
+                              ),
+                            );
+                            setState(() {});
+                          } catch (e) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Download failed')),
+                            );
+                          }
+                        } else {
+                          final player = ref.read(audioPlayerProvider);
 
-  /// ================= FILE =================
-  Future<File> _getLocalFile(String url) async {
-    final dir = await getApplicationDocumentsDirectory();
-    final filename = "${sha1.convert(utf8.encode(url))}.mp3";
-    return File('${dir.path}/$filename');
+                          await player.pause();
+
+                          setState(() {});
+
+                          await Future.delayed(
+                            const Duration(milliseconds: 300),
+                          );
+
+                          final prefs = await SharedPreferences.getInstance();
+                          await prefs.setString(
+                            'saved_reciter',
+                            currentReciter,
+                          );
+
+                          // Play from tapped ayah index
+                          _playAudioFromAyah(
+                            file.path,
+                            currentReciter,
+                            index,
+                          );
+
+                          ref.read(bottomPlayerProvider.notifier).setReciter(
+                            reciterNames[
+                            widget.surah.audioUrls.indexOf(currentReciter)],
+                          );
+
+                          Navigator.pop(context);
+                        }
+                      },
+                      icon: Icon(
+                        isDownloaded
+                            ? (isPlaying ? Icons.pause : Icons.play_arrow)
+                            : Icons.download,
+                      ),
+                      label: Text(
+                        isDownloaded
+                            ? (isPlaying ? "Pause Audio" : "Play Audio")
+                            : "Download Audio",
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
+
+              /// -------- BOOKMARK BUTTON --------
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    side: BorderSide(
+                      color: bookmarks.any(
+                            (b) =>
+                        b.suraId == widget.surah.id &&
+                            b.ayahId == ayah.ayah,
+                      )
+                          ? Colors.orange
+                          : Colors.grey,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  onPressed: () {
+                    ref
+                        .read(bookmarksProvider.notifier)
+                        .toggle(
+                      widget.surah.id,
+                      ayah.ayah,
+                      ayah.arabic,
+                      ayah.english,
+                    );
+                  },
+                  icon: Icon(
+                    bookmarks.any(
+                          (b) =>
+                      b.suraId == widget.surah.id &&
+                          b.ayahId == ayah.ayah,
+                    )
+                        ? Icons.bookmark
+                        : Icons.bookmark_border,
+                    color: bookmarks.any(
+                          (b) =>
+                      b.suraId == widget.surah.id &&
+                          b.ayahId == ayah.ayah,
+                    )
+                        ? Colors.orange
+                        : Colors.grey,
+                  ),
+                  label: Text(
+                    bookmarks.any(
+                          (b) =>
+                      b.suraId == widget.surah.id &&
+                          b.ayahId == ayah.ayah,
+                    )
+                        ? "Remove Bookmark"
+                        : "Add Bookmark",
+                    style: TextStyle(
+                      color: bookmarks.any(
+                            (b) =>
+                        b.suraId == widget.surah.id &&
+                            b.ayahId == ayah.ayah,
+                      )
+                          ? Colors.orange
+                          : Colors.grey,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   String toArabicNumber(int number) {
-    const arabic = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
-    return number.toString().split('').map((e)=>arabic[int.parse(e)]).join();
+    const arabicDigits = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+    return number
+        .toString()
+        .split('')
+        .map((e) => arabicDigits[int.parse(e)])
+        .join();
+  }
+
+  void showSettingsBottomSheet(
+      BuildContext context, {
+        required List<String> audioUrls,
+        required List<String> reciterNames,
+        required Future<void> Function(String url, String name) downloadAndPlay,
+        required Future<File> Function(String url) getLocalFile,
+        required Function(String path, String url) playAudio,
+      }) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.9,
+        maxChildSize: 0.95,
+        minChildSize: 0.6,
+        builder: (context, scrollController) {
+          return SingleChildScrollView(
+            controller: scrollController,
+            child: SettingsBottomSheet(
+              audioUrls: audioUrls,
+              reciterNames: reciterNames,
+              downloadAndPlay: downloadAndPlay,
+              getLocalFile: getLocalFile,
+              playAudio: playAudio,
+            ),
+          );
+        },
+      ),
+    );
   }
 }
