@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:reciter_project/model/user_reciter_model.dart';
-import 'package:reciter_project/screen/widget/sura_details_screen.dart';
+import 'package:reciter_project/features/sura_list/model/user_reciter_model.dart';
+import 'package:reciter_project/features/sura_details_section/sura_details/view/sura_details_screen.dart';
 
 class BookmarksScreen extends ConsumerWidget {
   final UserReciterModel model;

@@ -1,7 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 
-import '../../model/user_reciter_model.dart';
+import '../../features/sura_list/model/user_reciter_model.dart';
 
 final audioControllerProvider =
 StateNotifierProvider<AudioController, AudioState>((ref) {

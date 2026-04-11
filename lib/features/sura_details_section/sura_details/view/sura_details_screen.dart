@@ -12,11 +12,11 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:reciter_project/screen/widget/settings_bottom_sheet.dart';
-import 'package:reciter_project/screen/widget/weekly_report_screen.dart';
+import 'package:reciter_project/features/weekly_report_screen/view/weekly_report_screen.dart';
 
-import '../../common/custom_text.dart';
-import '../../model/settings_view_model.dart';
-import '../../model/user_reciter_model.dart';
+import '../../../../common/custom_text.dart';
+import '../../../../model/settings_view_model.dart';
+import '../../../sura_list/model/user_reciter_model.dart';
 
 final playbackSpeedProvider = StateProvider<double>((ref) => 0.5);
 

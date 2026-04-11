@@ -7,13 +7,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:reciter_project/screen/widget/sura_details_screen.dart';
-import 'package:reciter_project/screen/widget/weekly_report_screen.dart';
+import 'package:reciter_project/features/sura_details_section/sura_details/view/sura_details_screen.dart';
+import 'package:reciter_project/features/weekly_report_screen/view/weekly_report_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../common/custom_text.dart';
 import '../../model/settings_view_model.dart';
-import '../../model/user_reciter_model.dart';
+import '../../features/sura_list/model/user_reciter_model.dart';
 
 class SurahDetailScreenTwo extends ConsumerStatefulWidget {
   final Surah surah;

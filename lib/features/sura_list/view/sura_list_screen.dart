@@ -3,10 +3,10 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:reciter_project/screen/widget/sura_details_screen.dart';
-import 'package:reciter_project/screen/widget/bookmarks_screen.dart';
+import 'package:reciter_project/features/sura_details_section/sura_details/view/sura_details_screen.dart';
+import 'package:reciter_project/features/book_mark/view/bookmarks_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../../view_model/reciter_view_model.dart';
+import '../view_model/reciter_view_model.dart';
 
 // ------------------- 1. Goal Provider with persistence -------------------
 class GoalNotifier extends StateNotifier<int?> {
